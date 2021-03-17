@@ -50,7 +50,13 @@ def setup_openzfs(config):
     assert builddir.is_dir()
     assert (builddir / "zfs_config.h").exists()
     assert (builddir / "Makefile").exists()
-    assert (builddir / ".git").is_dir()
+    assert (builddir / ".git").exists() # don't assert .is_dir() so that git worktrees work
+    zfs_binary = builddir / "cmd" / "zfs" / "zfs"
+    assert zfs_binary.exists()
+    zpool_binary = builddir / "cmd" / "zpool" / "zpool"
+    assert zpool_binary.exists()
+    mountzfs_binary = builddir / "cmd" / "mount_zfs" / "mount.zfs"
+    assert mountzfs_binary.exists()
 
     mountpoint = config["mountpoint"]
     assert mountpoint.is_dir()
@@ -90,7 +96,7 @@ def setup_openzfs(config):
     filesystem_properties = config["filesystem_properties"]
     assert "mountpoint" not in filesystem_properties.keys()
     filesystem_properties["mountpoint"] = "legacy"
-    zpool_create_cmd = [builddir / "bin" / "zpool", "create", "-f",
+    zpool_create_cmd = [zpool_binary, "create", "-f",
         *flagdict_to_argv("-O", filesystem_properties),
         *flagdict_to_argv("-o", config["pool_properties"]),
         poolname, *vdevs]
@@ -98,13 +104,13 @@ def setup_openzfs(config):
 
     # get pool metadata
     def get_pool_guid(poolname):
-        guid = str(must_run([builddir / "bin" / "zpool", "get", "-H", "-p", "-o", "value",  "guid", poolname]).stdout).strip()
+        guid = str(must_run([zpool_binary, "get", "-H", "-p", "-o", "value",  "guid", poolname]).stdout).strip()
         return guid
 
     guid = get_pool_guid(poolname)
 
     # mount pool (child datasets need it mounted)
-    must_run([builddir / "bin" / "mount.zfs", poolname, mountpoint])
+    must_run([mountzfs_binary, poolname, mountpoint])
 
     # create child datasets if requested
     create_child_datasets = config["create_child_datasets"]
@@ -120,10 +126,10 @@ def setup_openzfs(config):
 
         for i in range(0, count):
             ds = poolname + "/" + name_format_str.format(i)
-            must_run([builddir / "bin" / "zfs", "create", "-o", "mountpoint=legacy", ds])
+            must_run([zfs_binary, "create", "-o", "mountpoint=legacy", ds])
             ds_mp = mountpoint / dirname_format_str.format(i)
             ds_mp.mkdir()
-            must_run([builddir / "bin" / "mount.zfs", ds, ds_mp])
+            must_run([mountzfs_binary, ds, ds_mp])
 
     # create child zvols if requested
     create_child_zvols = config["create_child_zvols"]
@@ -138,7 +144,7 @@ def setup_openzfs(config):
         zvol_paths = []
         for i in range(0, count):
             ds = poolname + "/" + name_format_str.format(i)
-            must_run([builddir / "bin" / "zfs", "create", "-V", size, "-o", f"volblocksize={create_child_zvols['volblocksize']}", ds])
+            must_run([zfs_binary, "create", "-V", size, "-o", f"volblocksize={create_child_zvols['volblocksize']}", ds])
             zvol_paths += [Path(f"/dev/zvol/{ds}")]
         for p in zvol_paths:
             while True:
@@ -153,7 +159,7 @@ def setup_openzfs(config):
         # check pool guid to ensure that we only destroy pools that we created
         currentguid = get_pool_guid(poolname)
         if currentguid == guid:
-            must_run([builddir / "bin" / "zpool", "destroy", poolname]) # takes care of unmounting
+            must_run([zpool_binary, "destroy", poolname]) # takes care of unmounting
         else:
             raise Exception("expecting to destroy pool {poolname} with guid {guid} but has guid {currentguid}")
         unload_modules() # always
