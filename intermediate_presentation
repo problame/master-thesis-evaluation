@@ -6,12 +6,12 @@ import lib.partitioning
 import lib.zfssetup
 import lib.fio
 import lib.zfs_write_latencyanalysis
+from lib.resultstorage import ResultStorage
 from pathlib import Path
 import hashlib
 import tempfile
 import json
 import shutil
-import uuid
 import sys
 from lib.helpers import merge_dicts, string_with_one_format_placeholder
 import copy
@@ -52,7 +52,7 @@ class Store:
 		s.d = d
 		return s
 
-resultdir = Path(sys.argv[1])
+resultdir = Path("./results")
 store_savepoint_filepath = resultdir / "store-savepoint.json"
 if store_savepoint_filepath.exists():
     with open(store_savepoint_filepath, "r") as f:
@@ -109,13 +109,6 @@ def system_setup():
         lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
 
 
-def find_unused_random_filename_in_dir(d, pattern):
-    assert string_with_one_format_placeholder(pattern)
-    while True:
-        p = d / pattern.format(uuid.uuid4())
-        if not p.exists():
-            return p
-
 def make_zfs_setup_config(customizations):
     common = {
        "builddir": Path("/root/zil-pmem/zil-pmem"),
@@ -164,10 +157,10 @@ def make_fio_config(fio_config_constomizations):
 def run_fio_series(fio_config, emit_result):
     for numjobs in range(1,16):
         assert "numjobs" not in fio_config
-        fio_config = merge_dicts(fio_config, { "numjobs": numjobs })
-        fiojson = lib.fio.run(fio_config)
+        this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs })
+        fiojson = lib.fio.run(this_fio_config)
         result = {
-                "fio_config": fio_config,
+                "fio_config": this_fio_config,
                 "fio_jsonplus": fiojson,
         }
         emit_result(result)
@@ -229,22 +222,22 @@ def sync0_benchmark(emit_result):
     zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
 
 def devdax_benchmark(emit_result):
-    run_fio_series({
+    run_fio_series(make_fio_config({
         "sync": 1,
         "target": {
             "type": "devdax",
             "devdax_path": store.get_one('devdax'),
         }
-    }, emit_result)
+    }), emit_result)
 
 def fsdax_benchmark(emit_result):
-    run_fio_series({
+    run_fio_series(make_fio_config({
         "sync": 1,
         "target": {
             "type": "blockdev",
             "blockdev_path": store.get_one('fsdax'),
         }
-    }, emit_result)
+    }), emit_result)
 
 
 
@@ -292,27 +285,24 @@ def zillwb_latency_analysis(emit_result):
 
 ################# MAIN SCRIPT ##################
 
-def save_json_result(subject, prefix, result_dict):
-    # https://hynek.me/articles/serialization/
-    @functools.singledispatch
-    def to_serializable(val):
-        return str(val)
-    ## actually we don't need custom serializers for anything, str(Path) is all we need and that's covered by the default case
-    result_dict = merge_dicts(result_dict, {"test_subject": subject})
-    outpath = find_unused_random_filename_in_dir(resultdir, prefix + "-{}.json")
-    with open(outpath, "w") as f:
-        json.dump(result_dict, f, default=to_serializable)
 
 if not store_loaded_from_savepoint:
     system_setup()
-
 with open(store_savepoint_filepath, "w") as f:
     json.dump(store.to_dict(), f)
 
-zilpmem_benchmark(lambda rd: save_json_result("zil-pmem", "result", rd))
-zillwb_benchmark(lambda rd: save_json_result("zil-lwb", "result", rd))
-sync0_benchmark(lambda rd: save_json_result("async", "result", rd))
-devdax_benchmark(lambda rd: save_json_result("devdax", "result", rd))
-fsdax_benchmark(lambda rd: save_json_result("fsdax", "result", rd))
-zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
+result_storage = ResultStorage(resultdir)
 
+def save_json_result(subject, prefix, result_dict):
+    result_dict = merge_dicts(result_dict, {"test_subject": subject})
+    result_storage.save_json_result(prefix, result_dict)
+
+# perf benchmarks
+zilpmem_benchmark(lambda rd: save_json_result("zil-pmem", "perf", rd))
+zillwb_benchmark(lambda rd: save_json_result("zil-lwb", "perf", rd))
+sync0_benchmark(lambda rd: save_json_result("async", "perf", rd))
+devdax_benchmark(lambda rd: save_json_result("devdax", "perf", rd))
+fsdax_benchmark(lambda rd: save_json_result("fsdax", "perf", rd))
+
+# latency breakdown
+zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
