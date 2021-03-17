@@ -1,0 +1,23 @@
+
+kprobe:zfs_write                                 { @start__zfs_write[tid] = nsecs; }
+kretprobe:zfs_write/@start__zfs_write[tid] != 0/ { @zfs_write = sum(nsecs - @start__zfs_write[tid]); delete(@start__zfs_write[tid]); }
+
+kprobe:zil_commit/@start__zfs_write[tid] != 0/                                 { @start__zil_commit[tid] = nsecs; }
+kretprobe:zil_commit/@start__zil_commit[tid] != 0/ { @zil_commit = sum(nsecs - @start__zil_commit[tid]); delete(@start__zil_commit[tid]); }
+
+kprobe:zfs_log_write/@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write[tid] = nsecs; }
+kretprobe:zfs_log_write/@start__zfs_log_write[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write[tid]); delete(@start__zfs_log_write[tid]); }
+
+kprobe:pmem_submit_bio                                  { @start__pmem_submit_bio[tid] = nsecs; }
+kretprobe:pmem_submit_bio/@start__pmem_submit_bio[tid] != 0/ { @pmem_submit_bio = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
+
+interval:ms:500
+{
+    printf("update_begin");
+    print(@zfs_write);
+    print(@zil_commit);
+    print(@zfs_log_write);
+    print(@pmem_submit_bio);
+    print(@zio_rewrite); // FIXME
+    printf("update_end");
+}
