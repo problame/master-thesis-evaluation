@@ -4,6 +4,9 @@ from pathlib import Path
 import dictlib
 import json
 import tempfile
+import threading
+import time
+import concurrent.futures
 
 TargetFsConfigSchema = Schema({
     "type": "fs",
@@ -22,16 +25,18 @@ TargetBlockdevConfigSchema = Schema({
     "blockdev_path": Path,
 })
 FioBenchmarkConfig = Schema({
+    "fio_binary": Path,
     "blocksize": And(int, is_p2),
-    "size": And(int, is_p2),
+    "size": And(int),
     "sync": Or(0, 1),
+    "fsync_every": And(int, lambda n: n >= 0),
     "numjobs": And(int, lambda n: n > 0),
     "runtime_seconds": And(int, lambda n: n > 0),
     "ramp_seconds": And(int, lambda n: n >= 0),
-    "target": Or(TargetFsConfigSchema, TargetDevdaxConfigSchema),
+    "target": Or(TargetFsConfigSchema, TargetBlockdevConfigSchema, TargetDevdaxConfigSchema),
 })
 
-def _run_fio(config, config_overrides, append_cmdline):
+def _run_fio(config, config_overrides, append_cmdline, call_after_rampup=None, call_after_fio_exit=None):
     config = merge_dicts(config, config_overrides)
 
     output_filename = "fio-output.json"
@@ -53,6 +58,8 @@ def _run_fio(config, config_overrides, append_cmdline):
         f"--sync={config['sync']}",
         f"--direct={config['direct']}",
 
+        f"--fsync={config['fsync_every']}",
+
         f"--numjobs={config['numjobs']}",
         "--group_reporting=1",
 
@@ -65,19 +72,42 @@ def _run_fio(config, config_overrides, append_cmdline):
         # write_iops_logs
     ]
 
-    tempdir = tempfile.TemporaryDirectory(prefix="run_fio_benchmark_", suffix="__run_fio")
-    d = Path(tempdir.name)
-    assert len(list(d.iterdir())) == 0
-    must_run(args, cwd=d)
-    output_filepath = d / output_filename
-    assert output_filepath.exists()
-    with open(output_filepath, "r") as f:
-        ret = json.load(f)
-    tempdir.cleanup()
+    starting_fio_event = threading.Event()
 
-    return ret
+    def run_fio_thread():
+        tempdir = tempfile.TemporaryDirectory(prefix="run_fio_benchmark_", suffix="__run_fio")
+        d = Path(tempdir.name)
+        assert len(list(d.iterdir())) == 0
 
-def _syncwrite_benchmark_fs(config):
+        starting_fio_event.set()
+        must_run(args, cwd=d)
+        if call_after_fio_exit is not None:
+            call_after_fio_exit()
+
+        output_filepath = d / output_filename
+        assert output_filepath.exists()
+        with open(output_filepath, "r") as f:
+            ret = json.load(f)
+        tempdir.cleanup()
+        return ret
+
+    def call_after_rampup_thread():
+        if call_after_rampup:
+            # wait for fio to start
+            starting_fio_event.wait()
+            # now wait for rampup time
+            time.sleep(config["ramp_seconds"])
+            # now call function
+            call_after_rampup()
+
+    # dirty but will work...
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        fio = executor.submit(run_fio_thread)
+        call = executor.submit(call_after_rampup_thread)
+        call.result()
+        return fio.result()
+
+def _syncwrite_benchmark_fs(config, **kwargs):
 
     filename_format = config['target']['filename_format_str']
     # setup the fio workfiles according to config
@@ -111,16 +141,19 @@ def _syncwrite_benchmark_fs(config):
     return _run_fio(
             config,
             {"ioengine": "sync", "direct": 0},
-            [ f"--filename_format=" + filename_format.format("$jobnum") ])
+            [ f"--filename_format=" + filename_format.format("$jobnum") ],
+            **kwargs,
+            )
 
-def _syncwrite_benchmark_devdax(config):
+def _syncwrite_benchmark_devdax(config, **kwargs):
     return _run_fio(
         config,
         {"ioengine":"dev-dax", "direct": 0},
-        [ f"--filename={config['target']['devdax_path']}" ]
+        [ f"--filename={config['target']['devdax_path']}" ],
+        **kwargs
     )
 
-def _syncwrite_benchmark_blockdev(config):
+def _syncwrite_benchmark_blockdev(config, **kwargs):
     return _run_fio(
         config,
         {"ioengine":"sync", "direct": 1},
@@ -128,16 +161,21 @@ def _syncwrite_benchmark_blockdev(config):
             f"--filename={config['target']['blockdev_path']}",
             "--allow_file_create=0",
         ]
+        ,
+        **kwargs
     )
 
 
-def run(config):
+def run(config, **kwargs):
+    # validate once on entry, then add values to it
+    config = FioBenchmarkConfig.validate(config)
+
     bytarget = {
         "blockdev": _syncwrite_benchmark_blockdev,
         "fs": _syncwrite_benchmark_fs,
         "devdax": _syncwrite_benchmark_devdax,
     }
-    return bytarget[config['target']['type']](config)
+    return bytarget[config['target']['type']](config, **kwargs)
 
 
 

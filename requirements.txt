@@ -7,6 +7,7 @@ cffi==1.14.5
 contextlib2==0.6.0.post1
 cycler==0.10.0
 decorator==4.4.2
+deepmerge==0.2.1
 defusedxml==0.7.1
 dictlib==1.1.5
 dotted-notation==0.4.4
@@ -42,6 +43,7 @@ Pillow==8.1.2
 pkg-resources==0.0.0
 prometheus-client==0.9.0
 prompt-toolkit==3.0.17
+psutil==5.8.0
 ptyprocess==0.7.0
 pycparser==2.20
 Pygments==2.8.1
