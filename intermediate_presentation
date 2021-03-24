@@ -236,7 +236,7 @@ def zilpmem_benchmark(emit_result):
     zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
 
 def itxg_bypass_evaluation(emit_result):
-    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,3,4,5,6,7,8,12,16,24], ["0", "1"], ["0", "1"], [1,2,4,8,16]):
+    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,3,4,5,6,7,8,10,12,14,16,24], ["1"], ["1", "2"], [1,16,32]):
         zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync=zvol_request_sync, itxg_bypass=itxg_bypass)
         fio_config = make_fio_config({
             "target": {
@@ -363,5 +363,5 @@ fsdax_benchmark(lambda rd: save_json_result("fsdax", "perf", rd))
 zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
 
 # itxg bypass
-itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v5", rd))
+itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6", rd))
 
