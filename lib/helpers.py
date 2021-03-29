@@ -1,6 +1,9 @@
 import mergedict
 import subprocess
 import copy
+import time
+from pathlib import Path
+import os
 
 def must_run(*args, **kwargs):
     print(f"running command {args[0]}")
@@ -71,3 +74,29 @@ def _merge_dicts_tests():
     assert res["shared"]["shared"]["shared"] == "b"
 
 _merge_dicts_tests()
+
+
+class AttrDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(AttrDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
+
+def poll_wait(sleeptime, check, what="<unspecified>", timeout=None):
+    start = time.monotonic()
+    while check() == False:
+        print(f"poll_wait for: {what}")
+        time.sleep(sleeptime)
+        if timeout and time.monotonic() - start > timeout:
+            raise Exception(f"poll_wait timeout {timeout}s waiting for {what}")
+    print(f"poll_wait done: {what}")
+
+def zero_out_first_sector(blockdev):
+    assert Path(blockdev).is_block_device()
+    assert "nvme0" not in str(blockdev)
+    fd = os.open(blockdev, os.O_WRONLY)
+    try:
+        os.pwrite(fd, bytearray(512), 0) #512 is the linux sector size
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+

@@ -1,0 +1,52 @@
+from schema import Schema, And, Optional
+from pathlib import Path
+from .helpers import AttrDict, must_run
+
+class LinuxFilesystem:
+
+    def __init__(self, **kwargs):
+        self.config = AttrDict(Schema({
+            "mountpoint": Path,
+            "blockdev": And(Path, Path.is_block_device),
+            Optional("mkfs_args", default=[]): [str],
+            Optional("mount_args", default=[]): [str],
+        }).validate(kwargs))
+        # protect the host system
+        assert "nvme0" not in str(self.config.blockdev)
+
+    def wipefs(self):
+        must_run(["wipefs", "-a", self.config.blockdev])
+
+    def mkfs(self):
+        self.wipefs()
+        cmd = [self.mkfs_binary, *self.config.mkfs_args, self.config.blockdev]
+        must_run(cmd)
+
+    def mount(self):
+        if not self.config.mountpoint.is_dir():
+            raise Exception(f"mountpoint={self.config.mountpoint} must be a directory")
+        cmd = ["mount", "-t", self.fstyp, *self.config.mount_args, self.config.blockdev, self.config.mountpoint]
+        must_run(cmd)
+
+    def unmount(self):
+        must_run(["umount", self.config.mountpoint])
+
+
+    def __enter__(self):
+        self.wipefs()
+        self.mkfs()
+        self.mount()
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.unmount()
+        self.wipefs()
+
+class XFS(LinuxFilesystem):
+    mkfs_binary = "mkfs.xfs"
+    fstyp = "xfs"
+
+class Ext4(LinuxFilesystem):
+    mkfs_binary = "mkfs.ext4"
+    fstyp = "ext4"
+
