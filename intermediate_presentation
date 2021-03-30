@@ -10,6 +10,7 @@ import lib.rocksdb_bench
 import lib.filebench
 import lib.redis_benchmark
 import lib.sqlite_bench
+import lib.sysbench_mariadb
 import lib.cpu_stats
 import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
@@ -488,8 +489,24 @@ def run_with_setup(setup):
         #res = lib.redis_benchmark.run(config)
 
         print(mountpoint)
+
+        res = lib.sysbench_mariadb.run({
+            "dir": mountpoint,
+            "mariadb": {
+                "docker_image": {
+                    "repository": "mariadb",
+                    "tag": "10.5.9",
+                },
+            },
+            "sysbench_checkout": Path("/root/src/sysbench"),
+            "threads": 1,
+            "runtime_secs": 10,
+        })
+
         import pdb
         pdb.set_trace()
+
+        print(res)
 
         return {} 
 
@@ -516,7 +533,7 @@ setups = [
 ]
 
 results = []
-for setup in setups:
+for setup in setups[3:]:
     res = run_with_setup(setup[1])
     results += [(setup[0], res)]
 
