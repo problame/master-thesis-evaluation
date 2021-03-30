@@ -3,6 +3,7 @@ from .helpers import AttrDict
 import re
 from pathlib import Path
 import subprocess
+import time
 
 # Example Run:
 #./db_bench --benchmarks="fillsync" --db /mnt --wal_dir /mnt  --num=100000 --threads=3 --report_file_operations --report_bg_io_stats 2>/dev/null
@@ -104,7 +105,9 @@ def run(config):
 
     print(f"running db_bench: {args}")
     try:
+        start = time.monotonic()
         cp = subprocess.run(args, check=True, capture_output=True, text=True)
+        runtime = time.monotonic() - start
     except subprocess.CalledProcessError as e:
         raise Exception(f"error running db_bench:\n{e.stderr}") from e
 
@@ -112,6 +115,8 @@ def run(config):
 
     return {
         "stdout": cp.stdout,
+        "git_describe": git_describe.stdout,
+        "runtime": runtime,
         "metrics": metrics,
     }
 

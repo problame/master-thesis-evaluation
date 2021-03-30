@@ -8,7 +8,6 @@ class LinuxFilesystem:
         self.config = AttrDict(Schema({
             "mountpoint": Path,
             "blockdev": And(Path, Path.is_block_device),
-            Optional("mkfs_args", default=[]): [str],
             Optional("mount_args", default=[]): [str],
         }).validate(kwargs))
         # protect the host system
@@ -17,9 +16,12 @@ class LinuxFilesystem:
     def wipefs(self):
         must_run(["wipefs", "-a", self.config.blockdev])
 
+    def mkfs_args(self):
+        return []
+
     def mkfs(self):
         self.wipefs()
-        cmd = [self.mkfs_binary, *self.config.mkfs_args, self.config.blockdev]
+        cmd = [self.mkfs_binary, *self.mkfs_args(), self.config.blockdev]
         must_run(cmd)
 
     def mount(self):
@@ -49,4 +51,11 @@ class XFS(LinuxFilesystem):
 class Ext4(LinuxFilesystem):
     mkfs_binary = "mkfs.ext4"
     fstyp = "ext4"
+
+    def mkfs_args(self):
+        mkfs_eopts = {
+            "lazy_itable_init":"0",
+            "lazy_journal_init":"0",
+        }
+        return ["-E", ",".join([f"{k}={v}" for k,v in mkfs_eopts.items()])]
 

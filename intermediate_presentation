@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 
+import contextlib
 import lib.cpus
 import lib.pmem
 import lib.partitioning
 import lib.zfssetup
 import lib.fio
+import lib.rocksdb_bench
+import lib.filebench
+import lib.redis_benchmark
+import lib.sqlite_bench
 import lib.cpu_stats
 import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
+import lib.devicemapper
+import lib.linux_filesystem
 from lib.resultstorage import ResultStorage
 from pathlib import Path
 import hashlib
@@ -15,7 +22,7 @@ import tempfile
 import json
 import shutil
 import sys
-from lib.helpers import merge_dicts, string_with_one_format_placeholder
+from lib.helpers import merge_dicts, string_with_one_format_placeholder, json_dump_default_to_str
 import copy
 import functools
 import threading
@@ -41,6 +48,12 @@ class Store:
 	def get_all(self, configlabel):
 		assert isinstance(configlabel, str)
 		return self.d.get(configlabel, [])
+
+	def get_first(self, configlabel):
+		assert isinstance(configlabel, str)
+		all = self.get_all(configlabel)
+		assert len(all) >= 1
+		return all[0]
 
 	def to_dict(self):
 		return copy.deepcopy(self.d)
@@ -352,16 +365,421 @@ def save_json_result(subject, prefix, result_dict):
     result_dict = merge_dicts(result_dict, {"test_subject": subject})
     result_storage.save_json_result(prefix, result_dict)
 
-# perf benchmarks
-zilpmem_benchmark(lambda rd: save_json_result("zil-pmem", "perf", rd))
-zillwb_benchmark(lambda rd: save_json_result("zil-lwb", "perf", rd))
-sync0_benchmark(lambda rd: save_json_result("async", "perf", rd))
-devdax_benchmark(lambda rd: save_json_result("devdax", "perf", rd))
-fsdax_benchmark(lambda rd: save_json_result("fsdax", "perf", rd))
+## perf benchmarks
+#zilpmem_benchmark(lambda rd: save_json_result("zil-pmem", "perf", rd))
+#zillwb_benchmark(lambda rd: save_json_result("zil-lwb", "perf", rd))
+#sync0_benchmark(lambda rd: save_json_result("async", "perf", rd))
+#devdax_benchmark(lambda rd: save_json_result("devdax", "perf", rd))
+#fsdax_benchmark(lambda rd: save_json_result("fsdax", "perf", rd))
+#
+## latency breakdown
+#zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
+#
+## itxg bypass
+#itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6", rd))
 
-# latency breakdown
-zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
+def zil_lwb_setup():
+    return make_zfs_setup_config({
+            "module_args": {
+                "zfs": {
+                        "zil_default_kind": "1",
+                        "zvol_request_sync": "0",
+                        "zfs_zil_itxg_bypass": "0",
+                }
+            },
+            "vdevs": [
+                "nodax:" + store.get_one('fsdax'), #!
+            ],
+        })
 
-# itxg bypass
-itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6", rd))
+setup = {
+        "zil-pmem": merge_dicts(zilpmem_zfsconfig(zvol_request_sync=sys.argv[2], itxg_bypass=sys.argv[3]), {"module_args": {"zfs": {"zfs_zil_pmem_prb_ncommitters": sys.argv[4]}}}),
+        "zil-lwb": zil_lwb_setup(),
+        }[sys.argv[1]]
+
+def run_with_setup(setup):
+    with contextlib.ExitStack() as stack:
+        #_ = stack.enter_context(lib.zfssetup.setup_openzfs(setup))
+        #mountpoint = Path("/dut/ds0")
+        mountpoint = stack.enter_context(setup())
+        assert mountpoint.is_mount()
+
+        # varmail, variable is 'nthreads'
+        # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+        # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded. 
+        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+        # TODO probably need longer runtime!
+        #res = lib.filebench.run({
+        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+        #    "name": "varmail",
+        #    "dir": mountpoint,
+        #    "runtime_secs": 10,
+        #    "vars": {
+        #        "nthreads": 7,
+        #    },
+        #})
+
+        # fileserver workload
+        # 'data intensive' according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+        # but it doesn't use sync I/O
+        #res = lib.filebench.run({
+        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+        #    "name": "fileserver",
+        #    "dir": mountpoint,
+        #    "runtime_secs": 10,
+        #    "vars": {
+        #        "nthreads": 1,
+        #    },
+        #})
+
+        # oltp workload
+        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
+        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+        #res = lib.filebench.run({
+        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+        #    "name": "oltp",
+        #    "dir": mountpoint,
+        #    "runtime_secs": 10,
+        #    "vars": {
+        #        "ndbwriters": 32,
+        #    },
+        #})
+
+        # sqlite fillrandsync benchmark
+        # can't vary number of threads :/
+        #res = lib.sqlite_bench.run({
+        #    "sqlitebench_checkout": Path("/root/src/sqlite-bench"),
+        #    "db_dir": mountpoint,
+        #    "benchmark": "fillrandsync",
+        #    "num": 10_000_000,
+        #})
+
+        # rocksdb db_bench fillsync
+        # (this is essentially a micro-benchmark of rocksdb WAL perf)
+        #res = lib.rocksdb_bench.run({
+        #    "rocksdb_dir": Path("/root/src/rocksdb"),
+        #    "db_dir": mountpoint,
+        #    "wal_dir": mountpoint,
+        #    "num": 400_000,
+        #    "threads": 8,
+        #    "benchmark": "fillsync",
+        #    "sync": True,
+        #})
+
+        #config = {
+        #    "redis6_checkout": Path("/root/src/redis"),
+        #    "dir": mountpoint,
+        #    #"nrequests": {
+        #    #    "type": "estimate",
+        #    #    "target_runtime_secs": 20,
+        #    #    "estimate_nrequests": 100_000,
+        #    #    "actual_runtime_tolerance_bounds": (15, 40),
+        #    #},
+        #    "nrequests": {
+        #        "type": "fixed",
+        #        "nrequests": 1_000_000,
+        #    },
+        #    "keyspacelen": 'nrequests',
+        #    "pipeline_numreq": 1,
+        #    "datasize": 3,
+        #    "clients": 1,
+        #    "threads": 1,
+        #}
+        #res = lib.redis_benchmark.run(config)
+
+        print(mountpoint)
+        import pdb
+        pdb.set_trace()
+
+        return {} 
+
+def make_openzfs_ctxmanager(config):
+    @contextlib.contextmanager
+    def f():
+        with lib.zfssetup.setup_openzfs(config):
+            yield Path("/dut/ds1")
+    return f
+
+def make_linux_filesystem_ctxmanager(Cl, config):
+    @contextlib.contextmanager
+    def f():
+        with Cl(**config):
+            yield config['mountpoint']
+    return f
+
+linux_filesystem_mountpoint = Path("/mnt")
+setups = [
+    ("zil-lwb", make_openzfs_ctxmanager(zil_lwb_setup())),
+    ("zil-pmem", make_openzfs_ctxmanager(setup)),
+    ("xfs-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.XFS, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
+    ("ext4-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.Ext4, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
+]
+
+results = []
+for setup in setups:
+    res = run_with_setup(setup[1])
+    results += [(setup[0], res)]
+
+import pdb
+pdb.set_trace()
+
+print(results)
+print("json")
+print("")
+print(json.dumps(results, default=json_dump_default_to_str))
+print("")
+print(json.dumps([(e, r['metrics']) for e, r in results]))
+
+#print({
+#    "baseline": baseline['metrics'],
+#    "bench": bench['metrics']
+#})
+
+
+#with contextlib.ExitStack() as stack:
+#    dm_pmem = stack.enter_context(lib.devicemapper.Target(name="pmem", table=lib.devicemapper.simple_linear_table({
+#        "size": 10*(1<<30),
+#        "device": Path("/dev/pmem0.2")})))
+#    dm_wc = stack.enter_context(lib.devicemapper.WritecachePmem({
+#            "name": "wc",
+#            "size": 40*(1<<30),
+#            "blocksize": 4096,
+#            "origin_device": Path("/dev/nvme1n1p1"),
+#            "cache_device": dm_pmem.path,
+#            "options": {
+#                "low_watermark": 0,
+#                "high_watermark": 0,
+#            }
+#        }))
+#    fs = stack.enter_context(lib.linux_filesystem.XFS(**{"blockdev": dm_wc.path, "mountpoint":Path("/mnt")}))
+#    import pdb
+#    pdb.set_trace()
+
+#class Zvol:
+#    def __init__(self):
+#        self.open_setup = None
+#
+#    @property
+#    def blockdev_path(self):
+#        if not self.open_setup:
+#            return None
+#        return Path("/dev/zvol/dut/zv0") # FIXME
+#
+#    def __enter__(self):
+#        config = self._make_config()
+#        assert self.blockdev_path is None
+#        assert self.open_setup is None
+#        self.open_setup = lib.zfssetup.setup_openzfs(config)
+#        self.open_setup.__enter__()
+#        return self
+#
+#    def __exit__(self, type, val, bt):
+#        self.open_setup.__exit__(type, val, bt)
+#        self.open_setup = None
+#
+#class ZvolLwb(Zvol):
+#
+#    def __init__(self, zvol_request_sync):
+#        super().__init__()
+#        self.zvol_request_sync = zvol_request_sync
+#
+#    def cli_name(self):
+#        return f"zvol-lwb-rs_{self.zvol_request_sync}"
+#
+#    def _make_config(self):
+#        return make_zfs_setup_config({
+#            "module_args": {
+#                "zfs": {
+#                        "zil_default_kind": "1",
+#                        "zvol_request_sync": self.zvol_request_sync,
+#                }
+#            },
+#            "vdevs": [
+#                # "nodax:" prefix needs to go if we switch this to mainline openzfs
+#                "nodax:" + store.get_one('fsdax'),
+#            ],
+#        })
+#
+#class ZvolPmem(Zvol):
+#
+#    def __init__(self, zvol_request_sync, itxg_bypass, ncommitters):
+#        super().__init__()
+#        self.zvol_request_sync = zvol_request_sync
+#        self.ncommitters = ncommitters
+#        self.zfs_zil_itxg_bypass = itxg_bypass
+#
+#    def cli_name(self):
+#        return f"zvol-pmem-rs_{self.zvol_request_sync}-byp_{self.zfs_zil_itxg_bypass}-nc_{self.ncommitters}"
+#
+#    def _make_config(self):
+#        return make_zfs_setup_config({
+#            "module_args": {
+#                "zfs": {
+#                        "zil_default_kind": "2",
+#                        "zfs_zil_pmem_prb_ncommitters": self.ncommitters,
+#                        "zvol_request_sync": self.zvol_request_sync,
+#                        "zfs_zil_itxg_bypass": self.itxg_bypass,
+#                }
+#            },
+#            "vdevs": [
+#                "dax:" + store.get_one('fsdax'),
+#            ],
+#        })
+#
+#
+#class DevPmem:
+#
+#    def __init__(self):
+#        self.dev = None
+#
+#    def cli_name(self):
+#        return f"devpmem"
+#
+#    @property
+#    def blockdev_path(self):
+#        return self.dev
+#
+#    def __enter__(self):
+#        assert self.dev is None
+#        self.dev = Path(store.get_first("fsdax"))
+#        assert self.dev.is_block_device()
+#
+#    def __exit__(self):
+#        assert self.dev is not None
+#        self.dev = None
+#
+#class DmWritecache:
+#
+#    def __init__(self):
+#        self.stack = None
+#        self.dm_wc = None
+#
+#    def cli_name(self):
+#        return f"dm-writecache"
+#
+#    @property
+#    def blockdev_path(self):
+#        if not self.dm_wc:
+#            return None
+#        return self.dm_wc.path
+#
+#    def __enter__(self):
+#        assert self.stack is None
+#        assert self.dm_wc is None
+#        self.stack = contextlib.ExitStack()
+#        dm_pmem = self.stack.enter_context(lib.devicemapper.Target(name="pmem", table=lib.devicemapper.simple_linear_table({
+#            "size": 10*(1<<30),
+#            "device": Path(store.get_one("fsdax"))})))
+#        self.dm_wc = self.stack.enter_context(lib.devicemapper.WritecachePmem({
+#                "name": "wc",
+#                "size": 40*(1<<30),
+#                "blocksize": 4096,
+#                "origin_device": Path(store.get_first("nvmepart")),
+#                "cache_device": dm_pmem.path,
+#                # always do writeback so that it approximates the zvol
+#                "options": {
+#                    "low_watermark": 0,
+#                    "high_watermark": 0,
+#                }
+#            }))
+#
+#        return self
+#
+#    def __exit__(self, type, val, bt):
+#        self.stack.__exit__(type, val, bt)
+#        self.stack = None
+#        self.dm_wc = None
+#
+#zvol_pmem_ncommitters = 3
+#blockdev_stacks = [
+#   [ZvolLwb, 0],
+#   [ZvolLwb, 1],
+#
+#   [ZvolPmem, 0, 0, 3],
+#   [ZvolPmem, 0, 1, 3],
+#   [ZvolPmem, 0, 2, 3],
+#
+#   [ZvolPmem, 1, 0, 3],
+#   [ZvolPmem, 1, 1, 3],
+#   [ZvolPmem, 1, 2, 3],
+#
+#   [DevPmem],
+#   [DmWritecache],
+#]
+#import collections
+#
+#blockdev_stacks = [collections.deque(t) for t in blockdev_stacks]
+#
+#blockdev_stacks = [(t.popleft())(*t) for t in blockdev_stacks]
+#
+#blockdev_stacks_by_name = { s.cli_name(): s for s in blockdev_stacks}
+#
+#import click
+#
+#@click.group()
+#def app():
+#    pass
+#
+#@app.command()
+#@click.argument("stackname", type=click.Choice(sorted(list(blockdev_stacks_by_name.keys()))))
+#def blockdev_stack(stackname):
+#    try:
+#        s = blockdev_stacks_by_name[stackname]
+#    except KeyError as e:
+#        print(f"invalid stack name {stackname!r}. available: {sorted(list(blockdev_stacks_by_name.keys()))}")
+#
+#    print(f"setting up stack {s.cli_name()!r}")
+#
+#    with s as s:
+#        print(f"blockdev is available at {s.blockdev_path}")
+#        import pdb
+#        pdb.set_trace()
+#
+#class ZfsStack:
+#    pass
+#
+#class LinuxFilesystemStack:
+#    def __init__(self, blockdev_stack):
+#        self.blockdev_stack = blockdev_stack
+#
+#    def __enter__(self):
+#
+#
+#@app.command()
+#def fs_stack(stackname):
+#
+#app()
+
+#with contextlib.ExitStack() as stack:
+#    dm_pmem = stack.enter_context(lib.devicemapper.Target(name="pmem", table=lib.devicemapper.simple_linear_table({
+#        "size": 10*(1<<30),
+#        "device": Path("/dev/pmem0.2")})))
+#    dm_wc = stack.enter_context(lib.devicemapper.WritecachePmem({
+#            "name": "wc",
+#            "size": 40*(1<<30),
+#            "blocksize": 4096,
+#            "origin_device": Path("/dev/nvme1n1p1"),
+#            "cache_device": dm_pmem.path,
+#            "options": {
+#                "low_watermark": 0,
+#                "high_watermark": 0,
+#            }
+#        }))
+#
+#    mountpoint = Path("/mnt")
+#    fs = stack.enter_context(lib.linux_filesystem.XFS(**{"blockdev": dm_wc.path, "mountpoint":mountpoint}))
+#
+#    res = lib.rocksdb_bench.run({
+#        "rocksdb_dir": Path("/root/src/rocksdb"),
+#        "db_dir": mountpoint,
+#        "wal_dir": mountpoint,
+#        "num": 100000,
+#        "threads": 3,
+#        "benchmark": "fillsync",
+#        "sync": True,
+#    })
+#
+#    import pdb
+#    pdb.set_trace()
+
 

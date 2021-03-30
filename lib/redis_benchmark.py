@@ -1,4 +1,4 @@
-from schema import Schema, And
+from schema import Schema, And, Or
 from pathlib import Path
 import subprocess
 import contextlib
@@ -8,6 +8,7 @@ import psutil
 from .helpers import poll_wait
 import csv
 import io
+import time
 
 example_output = """"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
 "SET","484496.16","33.753","14.432","29.839","45.855","74.879","75.711"
@@ -33,9 +34,23 @@ _test_parse_output()
 ConfigSchema = Schema({
     "redis6_checkout": And(Path, Path.is_dir),
     "dir": And(Path, Path.is_dir),
-    "nrequests": int, # find something that runs long enough
-    "keyspacelen": int, # default 1 (=> contention?)
+    "nrequests": Or(
+        {
+            "type": "estimate",
+            "estimate_nrequests": int,
+            "target_runtime_secs": int,
+            "actual_runtime_tolerance_bounds": (int, int),
+        },
+        {
+            "type": "fixed",
+            "nrequests": int,
+        },
+    ),
+    "keyspacelen": Or("nrequests", int), # default 1 (=> contention?)
+    "datasize": int, # default 3 (SplitFS uses 1024)
     "pipeline_numreq": int, # default 1, increase for throughput (needs keyspacelen > 1)
+    "threads": int,
+    "clients": int, # per thread
 })
 
 def run(config):
@@ -101,30 +116,78 @@ def run(config):
 
         assert redis_sock.exists()
 
-        args = [
-            redis_benchmark,
-            "-t", "set",
-            "-n", str(config['nrequests']),
-            "-r", str(config['keyspacelen']),
-            "-P", str(config['pipeline_numreq']),
-            "-s", redis_sock,
-            "--csv",
-        ]
-        print(f"running benchmark: {args}")
-        print("prewarm")
-        try:
-            subprocess.run(args, timeout=1)
-        except subprocess.TimeoutExpired as e:
-            pass
+        def do_run(ctx, nrequests):
+            assert isinstance(nrequests, int)
 
-        print("actual run")
-        try:
-            st = subprocess.run(args, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"error running redis-benchmark: {' '.join(args)}\n{e!r}") from e
+            keyspacelen = config['keyspacelen']
+            if keyspacelen == 'nrequests':
+                keyspacelen = nrequests
+
+            args = [
+                redis_benchmark,
+                "-t", "set",
+                "-n", str(nrequests),
+                "-r", str(keyspacelen),
+                "-P", str(config['pipeline_numreq']),
+                "-s", redis_sock,
+                "--csv",
+                "--threads", str(config['threads']),
+                "-c", str(config['clients']),
+                "-d", str(config['datasize']),
+            ]
+            print(f"running ({ctx}) {args}")
+
+            print("actual run")
+            try:
+                start = time.monotonic()
+                st = subprocess.run(args, check=True, capture_output=True, text=True)
+                runtime = time.monotonic() - start
+            except subprocess.CalledProcessError as e:
+                raise Exception(f"error running redis-benchmark: {' '.join(args)}\n{e!r}") from e
+
+            return {
+                "stdout": st.stdout,
+                "metrics": parse_output(st.stdout),
+                "runtime_secs": runtime,
+                "nrequests": nrequests,
+                "keyspacelen": keyspacelen,
+            }
+
+        def determine_nrequests():
+            if config['nrequests']['type'] == 'fixed':
+                return config['nrequests']['nrequests'], (None, None), None
+            else:
+                assert config['nrequests']['type'] == 'estimate'
+                est_config['nrequests']
+                estimate_nrequests = est_config['estimate_nrequests']
+                estimate = do_run("estimate nrequests", estimate_nrequests)
+                print(f"estimate results: {estimate}")
+                avg_latency_ms = estimate['metrics']['avg_latency_ms']
+                # runtime_secs = nrequests * (avg_latency_ms / 1000)
+                # <=>
+                # nrequests = runtime_secs * 1000 / avg_latency_ms
+                nrequests = est_config['target_runtime_secs'] * 1000 / avg_latency_ms
+                nrequests = int(nrequests)
+                print(f"estimated nrequests={nrequests}")
+                # TODO validate our model by comparing actual and estimated avg latency
+                allowed = est_config['actual_runtime_tolerance_bounds']
+                return nrequests, allowed, estimate
+        nrequests, rt_bounds, estimate = determine_nrequests()
+
+        # do the actual run
+        main_run = do_run("actual run", nrequests)
+
+        # validate that we are within allowed bounds
+        rt =  main_run['runtime_secs']
+        if rt_bounds[0] and not (rt_bounds[0] < rt):
+            raise Exception(f"lower runtime bound violated: rt={rt}, bounds={rt_bounds}")
+        if rt_bounds[1] and not (rt < rt_bounds[1]):
+            raise Exception(f"upper runtime bound violated: rt={rt}, bounds={rt_bounds}")
 
         return {
-            "stdout": st.stdout,
-            "metrics": parse_output(st.stdout),
+            "estimate": estimate,
+            "main": main_run,
         }
+
+
 

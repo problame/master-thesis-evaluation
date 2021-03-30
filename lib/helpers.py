@@ -4,6 +4,7 @@ import copy
 import time
 from pathlib import Path
 import os
+import functools
 
 def must_run(*args, **kwargs):
     print(f"running command {args[0]}")
@@ -99,4 +100,10 @@ def zero_out_first_sector(blockdev):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+# https://hynek.me/articles/serialization/
+@functools.singledispatch
+def json_dump_default_to_str(val):
+    return str(val)
 
