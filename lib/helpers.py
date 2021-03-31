@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 import os
 import functools
+import json
+import itertools
 
 def must_run(*args, **kwargs):
     print(f"running command {args[0]}")
@@ -107,3 +109,28 @@ def zero_out_first_sector(blockdev):
 def json_dump_default_to_str(val):
     return str(val)
 
+# https://stackoverflow.com/a/5228294/305410
+def product_dict(**kwargs):
+    keys = kwargs.keys()
+    vals = kwargs.values()
+    for instance in itertools.product(*vals):
+        yield dict(zip(keys, instance))
+def _test_product_dict():
+    p = list(product_dict(**{"a": {23, 42}, "b": {"x", "y"}}))
+    found = [
+        {"a": 23, "b": "x"},
+        {"a": 42, "b": "x"},
+        {"a": 23, "b": "y"},
+        {"a": 42, "b": "y"},
+    ]
+    found = list(map(lambda expect: [expect, False], found))
+
+    for pi in p:
+        for f in found:
+            # https://stackoverflow.com/a/31978554/305410
+            if f[0] == pi:
+                f[1] = True
+
+    for f in found:
+        assert f[1]
+_test_product_dict()

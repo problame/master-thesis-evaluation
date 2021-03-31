@@ -24,6 +24,9 @@ class LinuxFilesystem:
         cmd = [self.mkfs_binary, *self.mkfs_args(), self.config.blockdev]
         must_run(cmd)
 
+    def has_o_dax(self):
+        raise NotImplementedError
+
     def mount(self):
         if not self.config.mountpoint.is_dir():
             raise Exception(f"mountpoint={self.config.mountpoint} must be a directory")
@@ -48,6 +51,9 @@ class XFS(LinuxFilesystem):
     mkfs_binary = "mkfs.xfs"
     fstyp = "xfs"
 
+    def has_o_dax(self):
+        return True
+
 class Ext4(LinuxFilesystem):
     mkfs_binary = "mkfs.ext4"
     fstyp = "ext4"
@@ -58,4 +64,7 @@ class Ext4(LinuxFilesystem):
             "lazy_journal_init":"0",
         }
         return ["-E", ",".join([f"{k}={v}" for k,v in mkfs_eopts.items()])]
+
+    def has_o_dax(self):
+        return True
 

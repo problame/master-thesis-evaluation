@@ -15,7 +15,8 @@ import lib.cpu_stats
 import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
 import lib.devicemapper
-import lib.linux_filesystem
+import lib.storage_stacks
+import lib.benchmarks
 from lib.resultstorage import ResultStorage
 from pathlib import Path
 import hashlib
@@ -352,6 +353,86 @@ def zillwb_latency_analysis(emit_result):
                         }
                     )
 
+def make_zfs_stacks(identity):
+    s = lib.storage_stacks
+    return [
+        s.ZFSLwb(store, identity, "0"),
+        s.ZFSLwb(store, identity, "1"),
+        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["2","3"])],
+    ]
+
+def make_blockdev_stacks():
+    s = lib.storage_stacks
+    return  [
+            *make_zfs_stacks("zvol"),
+            s.DevPmem(store),
+            s.DmWritecache(store), # TODO may want a variant with dm-verity and/or dm-raid as origin?
+    ]
+
+def block_device_comparison(emit_result):
+    """shoot-out for 4k sync writes for different block device abstractions"""
+
+    stacks = make_blockdev_stacks()
+
+    # run 4k sync write becnhmark on each storage stack
+    for sstack_inactive in stacks:
+        with sstack_inactive as sstack:
+            fio_config = make_fio_config({
+                "sync": 1,
+                "target": {
+                    "type": "blockdev",
+                    "blockdev_path": sstack.blockdev_path,
+                },
+            })
+            # TODO: do we want to vary the --size parameter?
+            def emit_with_stack_info(rd):
+                emit_result({
+                    "storage_stack": sstack.as_dict(), # includes_id
+                    "fio_result": rd,
+                })
+            run_fio_series(fio_config, emit_with_stack_info)
+
+def fs_comparison(emit_result):
+    """shoot-out for various application-level benchmarks for different file system stacks"""
+
+
+    # setup all fs_stacks
+    fs_stacks = []
+    linux_filesystems = [lib.storage_stacks.XFS, lib.storage_stacks.Ext4]
+    ## linux fs mountpoint
+    linux_fs_mountpoint = Path("/dut_linux_fs")
+    if linux_fs_mountpoint.exists():
+        assert linux_fs_mountpoint.is_dir()
+        assert len(list(linux_fs_mountpoint.iterdir())) == 0
+    else:
+        linux_fs_mountpoint.mkdir()
+    ## do it
+    for (bdev_stack, linux_fs_cls) in itertools.product(make_blockdev_stacks(), linux_filesystems):
+        fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=False)]
+        if bdev_stack.is_dax_bdev() and linux_fs_cls.has_o_dax():
+            fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=True)]
+    ## ZFS is a combined volume manager & file system
+    fs_stacks.extend(make_zfs_stacks(identity="zfs"))
+
+    # setup all benchmarks
+    benchmarks = [
+        lib.benchmarks.Dummy(),
+        #lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": set(range(1,17))}),
+    ]
+
+    # for each fs stack: set it up, then run each experiment on it
+    # (setting up storage stacks takes some time => re-use stack for all experiments)
+    for fs_stack in fs_stacks:
+        with fs_stack as fs_stack:
+            for bench in benchmarks:
+                # TODO: do we want to vary the --size parameter?
+                def emit_with_storage_stack(rd):
+                    emit_result({
+                        "storage_stack": fs_stack.as_dict(), # includes id
+                        "result": rd, # includes bench id
+                    })
+                bench.run(fs_stack.fsstack_mountpoint, emit_with_storage_stack) # TODO subdir for each bench?
+
 ################# MAIN SCRIPT ##################
 
 
@@ -378,174 +459,180 @@ def save_json_result(subject, prefix, result_dict):
 #
 ## itxg bypass
 #itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6", rd))
+#
+## block-device performance
+#block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
 
-def zil_lwb_setup():
-    return make_zfs_setup_config({
-            "module_args": {
-                "zfs": {
-                        "zil_default_kind": "1",
-                        "zvol_request_sync": "0",
-                        "zfs_zil_itxg_bypass": "0",
-                }
-            },
-            "vdevs": [
-                "nodax:" + store.get_one('fsdax'), #!
-            ],
-        })
+## file-system application benchmarks
+fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
 
-setup = {
-        "zil-pmem": merge_dicts(zilpmem_zfsconfig(zvol_request_sync=sys.argv[2], itxg_bypass=sys.argv[3]), {"module_args": {"zfs": {"zfs_zil_pmem_prb_ncommitters": sys.argv[4]}}}),
-        "zil-lwb": zil_lwb_setup(),
-        }[sys.argv[1]]
-
-def run_with_setup(setup):
-    with contextlib.ExitStack() as stack:
-        #_ = stack.enter_context(lib.zfssetup.setup_openzfs(setup))
-        #mountpoint = Path("/dut/ds0")
-        mountpoint = stack.enter_context(setup())
-        assert mountpoint.is_mount()
-
-        # varmail, variable is 'nthreads'
-        # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
-        # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded. 
-        # https://github.com/filebench/filebench/wiki/Predefined-personalities
-        # TODO probably need longer runtime!
-        #res = lib.filebench.run({
-        #    "filebench_binary": Path("/usr/local/bin/filebench"),
-        #    "name": "varmail",
-        #    "dir": mountpoint,
-        #    "runtime_secs": 10,
-        #    "vars": {
-        #        "nthreads": 7,
-        #    },
-        #})
-
-        # fileserver workload
-        # 'data intensive' according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
-        # but it doesn't use sync I/O
-        #res = lib.filebench.run({
-        #    "filebench_binary": Path("/usr/local/bin/filebench"),
-        #    "name": "fileserver",
-        #    "dir": mountpoint,
-        #    "runtime_secs": 10,
-        #    "vars": {
-        #        "nthreads": 1,
-        #    },
-        #})
-
-        # oltp workload
-        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
-        # https://github.com/filebench/filebench/wiki/Predefined-personalities
-        #res = lib.filebench.run({
-        #    "filebench_binary": Path("/usr/local/bin/filebench"),
-        #    "name": "oltp",
-        #    "dir": mountpoint,
-        #    "runtime_secs": 10,
-        #    "vars": {
-        #        "ndbwriters": 32,
-        #    },
-        #})
-
-        # sqlite fillrandsync benchmark
-        # can't vary number of threads :/
-        #res = lib.sqlite_bench.run({
-        #    "sqlitebench_checkout": Path("/root/src/sqlite-bench"),
-        #    "db_dir": mountpoint,
-        #    "benchmark": "fillrandsync",
-        #    "num": 10_000_000,
-        #})
-
-        # rocksdb db_bench fillsync
-        # (this is essentially a micro-benchmark of rocksdb WAL perf)
-        #res = lib.rocksdb_bench.run({
-        #    "rocksdb_dir": Path("/root/src/rocksdb"),
-        #    "db_dir": mountpoint,
-        #    "wal_dir": mountpoint,
-        #    "num": 400_000,
-        #    "threads": 8,
-        #    "benchmark": "fillsync",
-        #    "sync": True,
-        #})
-
-        #config = {
-        #    "redis6_checkout": Path("/root/src/redis"),
-        #    "dir": mountpoint,
-        #    #"nrequests": {
-        #    #    "type": "estimate",
-        #    #    "target_runtime_secs": 20,
-        #    #    "estimate_nrequests": 100_000,
-        #    #    "actual_runtime_tolerance_bounds": (15, 40),
-        #    #},
-        #    "nrequests": {
-        #        "type": "fixed",
-        #        "nrequests": 1_000_000,
-        #    },
-        #    "keyspacelen": 'nrequests',
-        #    "pipeline_numreq": 1,
-        #    "datasize": 3,
-        #    "clients": 1,
-        #    "threads": 1,
-        #}
-        #res = lib.redis_benchmark.run(config)
-
-        print(mountpoint)
-
-        res = lib.sysbench_mariadb.run({
-            "dir": mountpoint,
-            "mariadb": {
-                "docker_image": {
-                    "repository": "mariadb",
-                    "tag": "10.5.9",
-                },
-            },
-            "sysbench_checkout": Path("/root/src/sysbench"),
-            "threads": 1,
-            "runtime_secs": 10,
-        })
-
-        import pdb
-        pdb.set_trace()
-
-        print(res)
-
-        return {} 
-
-def make_openzfs_ctxmanager(config):
-    @contextlib.contextmanager
-    def f():
-        with lib.zfssetup.setup_openzfs(config):
-            yield Path("/dut/ds1")
-    return f
-
-def make_linux_filesystem_ctxmanager(Cl, config):
-    @contextlib.contextmanager
-    def f():
-        with Cl(**config):
-            yield config['mountpoint']
-    return f
-
-linux_filesystem_mountpoint = Path("/mnt")
-setups = [
-    ("zil-lwb", make_openzfs_ctxmanager(zil_lwb_setup())),
-    ("zil-pmem", make_openzfs_ctxmanager(setup)),
-    ("xfs-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.XFS, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
-    ("ext4-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.Ext4, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
-]
-
-results = []
-for setup in setups[3:]:
-    res = run_with_setup(setup[1])
-    results += [(setup[0], res)]
-
-import pdb
-pdb.set_trace()
-
-print(results)
-print("json")
-print("")
-print(json.dumps(results, default=json_dump_default_to_str))
-print("")
-print(json.dumps([(e, r['metrics']) for e, r in results]))
+#def zil_lwb_setup():
+#    return make_zfs_setup_config({
+#            "module_args": {
+#                "zfs": {
+#                        "zil_default_kind": "1",
+#                        "zvol_request_sync": "0",
+#                        "zfs_zil_itxg_bypass": "0",
+#                }
+#            },
+#            "vdevs": [
+#                "nodax:" + store.get_one('fsdax'), #!
+#            ],
+#        })
+#
+#setup = {
+#        "zil-pmem": merge_dicts(zilpmem_zfsconfig(zvol_request_sync=sys.argv[2], itxg_bypass=sys.argv[3]), {"module_args": {"zfs": {"zfs_zil_pmem_prb_ncommitters": sys.argv[4]}}}),
+#        "zil-lwb": zil_lwb_setup(),
+#        }[sys.argv[1]]
+#
+#def run_with_setup(setup):
+#    with contextlib.ExitStack() as stack:
+#        #_ = stack.enter_context(lib.zfssetup.setup_openzfs(setup))
+#        #mountpoint = Path("/dut/ds0")
+#        mountpoint = stack.enter_context(setup())
+#        assert mountpoint.is_mount()
+#
+#        # varmail, variable is 'nthreads'
+#        # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+#        # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded. 
+#        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+#        # TODO probably need longer runtime!
+#        #res = lib.filebench.run({
+#        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+#        #    "name": "varmail",
+#        #    "dir": mountpoint,
+#        #    "runtime_secs": 10,
+#        #    "vars": {
+#        #        "nthreads": 7,
+#        #    },
+#        #})
+#
+#        # fileserver workload
+#        # 'data intensive' according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+#        # but it doesn't use sync I/O
+#        #res = lib.filebench.run({
+#        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+#        #    "name": "fileserver",
+#        #    "dir": mountpoint,
+#        #    "runtime_secs": 10,
+#        #    "vars": {
+#        #        "nthreads": 1,
+#        #    },
+#        #})
+#
+#        # oltp workload
+#        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
+#        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+#        #res = lib.filebench.run({
+#        #    "filebench_binary": Path("/usr/local/bin/filebench"),
+#        #    "name": "oltp",
+#        #    "dir": mountpoint,
+#        #    "runtime_secs": 10,
+#        #    "vars": {
+#        #        "ndbwriters": 32,
+#        #    },
+#        #})
+#
+#        # sqlite fillrandsync benchmark
+#        # can't vary number of threads :/
+#        #res = lib.sqlite_bench.run({
+#        #    "sqlitebench_checkout": Path("/root/src/sqlite-bench"),
+#        #    "db_dir": mountpoint,
+#        #    "benchmark": "fillrandsync",
+#        #    "num": 10_000_000,
+#        #})
+#
+#        # rocksdb db_bench fillsync
+#        # (this is essentially a micro-benchmark of rocksdb WAL perf)
+#        #res = lib.rocksdb_bench.run({
+#        #    "rocksdb_dir": Path("/root/src/rocksdb"),
+#        #    "db_dir": mountpoint,
+#        #    "wal_dir": mountpoint,
+#        #    "num": 400_000,
+#        #    "threads": 8,
+#        #    "benchmark": "fillsync",
+#        #    "sync": True,
+#        #})
+#
+#        #config = {
+#        #    "redis6_checkout": Path("/root/src/redis"),
+#        #    "dir": mountpoint,
+#        #    #"nrequests": {
+#        #    #    "type": "estimate",
+#        #    #    "target_runtime_secs": 20,
+#        #    #    "estimate_nrequests": 100_000,
+#        #    #    "actual_runtime_tolerance_bounds": (15, 40),
+#        #    #},
+#        #    "nrequests": {
+#        #        "type": "fixed",
+#        #        "nrequests": 1_000_000,
+#        #    },
+#        #    "keyspacelen": 'nrequests',
+#        #    "pipeline_numreq": 1,
+#        #    "datasize": 3,
+#        #    "clients": 1,
+#        #    "threads": 1,
+#        #}
+#        #res = lib.redis_benchmark.run(config)
+#
+#        print(mountpoint)
+#
+#        #res = lib.sysbench_mariadb.run({
+#        #    "dir": mountpoint,
+#        #    "mariadb": {
+#        #        "docker_image": {
+#        #            "repository": "mariadb",
+#        #            "tag": "10.5.9",
+#        #        },
+#        #    },
+#        #    "sysbench_checkout": Path("/root/src/sysbench"),
+#        #    "threads": 1,
+#        #    "runtime_secs": 10,
+#        #})
+#
+#        import pdb
+#        pdb.set_trace()
+#
+#        print(res)
+#
+#        return {} 
+#
+#def make_openzfs_ctxmanager(config):
+#    @contextlib.contextmanager
+#    def f():
+#        with lib.zfssetup.setup_openzfs(config):
+#            yield Path("/dut/ds1")
+#    return f
+#
+#def make_linux_filesystem_ctxmanager(Cl, config):
+#    @contextlib.contextmanager
+#    def f():
+#        with Cl(**config):
+#            yield config['mountpoint']
+#    return f
+#
+#linux_filesystem_mountpoint = Path("/mnt")
+#setups = [
+#    ("zil-lwb", make_openzfs_ctxmanager(zil_lwb_setup())),
+#    ("zil-pmem", make_openzfs_ctxmanager(setup)),
+#    ("xfs-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.XFS, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
+#    ("ext4-dax", make_linux_filesystem_ctxmanager(lib.linux_filesystem.Ext4, {"blockdev": Path(store.get_one('fsdax')), "mountpoint":linux_filesystem_mountpoint, "mount_args":["-o", "dax"]})),
+#]
+#
+#results = []
+#for setup in setups[3:]:
+#    res = run_with_setup(setup[1])
+#    results += [(setup[0], res)]
+#
+#import pdb
+#pdb.set_trace()
+#
+#print(results)
+#print("json")
+#print("")
+#print(json.dumps(results, default=json_dump_default_to_str))
+#print("")
+#print(json.dumps([(e, r['metrics']) for e, r in results]))
 
 #print({
 #    "baseline": baseline['metrics'],
