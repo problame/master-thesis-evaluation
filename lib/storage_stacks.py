@@ -132,7 +132,9 @@ class DevPmem:
 
     @property
     def blockdev_path(self):
-        return self.dev
+        if self.dev:
+            return self.dev
+        return None
 
     def is_dax_bdev(self):
         return True
@@ -141,6 +143,7 @@ class DevPmem:
         assert self.dev is None
         self.dev = Path(self.store.get_first("fsdax"))
         assert self.dev.is_block_device()
+        return self
 
     def __exit__(self, type, val, bt):
         assert self.dev is not None

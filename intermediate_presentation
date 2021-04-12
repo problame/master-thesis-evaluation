@@ -354,6 +354,7 @@ def zillwb_latency_analysis(emit_result):
                     )
 
 def make_zfs_stacks(identity):
+    """all ZFS stacks have recordsize / volblocksize set to 4k"""
     s = lib.storage_stacks
     return [
         s.ZFSLwb(store, identity, "0"),
@@ -364,7 +365,7 @@ def make_zfs_stacks(identity):
 def make_blockdev_stacks():
     s = lib.storage_stacks
     return  [
-            *make_zfs_stacks("zvol"),
+            #*make_zfs_stacks("zvol"),
             s.DevPmem(store),
             s.DmWritecache(store), # TODO may want a variant with dm-verity and/or dm-raid as origin?
     ]
@@ -383,8 +384,8 @@ def block_device_comparison(emit_result):
                     "type": "blockdev",
                     "blockdev_path": sstack.blockdev_path,
                 },
+                # TODO: do we want to vary the fio --size parameter?
             })
-            # TODO: do we want to vary the --size parameter?
             def emit_with_stack_info(rd):
                 emit_result({
                     "storage_stack": sstack.as_dict(), # includes_id
@@ -416,22 +417,47 @@ def fs_comparison(emit_result):
 
     # setup all benchmarks
     benchmarks = [
-        lib.benchmarks.Dummy(),
-        #lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": set(range(1,17))}),
+        lib.benchmarks.Dummy(), # verify that all the storage stack impls work
+
+        # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded. 
+        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+        #
+        # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+        lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": list(range(1,17))}),
+
+#        # oltp workload
+#        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
+#        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+        lib.benchmarks.Filebench(identity="filebench-oltp", workload="oltp", vars={"ndbwriters": list(range(1,17))}),
+
+        # rocksdb db_bench-inspired benchmark for sqlite, with WAL enabled, doesn't have parallelism params
+        lib.benchmarks.SqliteBench(num=10_000_000),
+
+        # rocksdb db_bench fillsync benchmark (mostly a stress-test for the rocksdb WAL)
+        lib.benchmarks.RocksdbBench(num=400_000, nthreads=list(range(1,17))),
+
+        # redis-benchmark 'SET' test, redis confired appendonly yes, appendfsync always (="every redis operation is durable")
+        lib.benchmarks.RedisSetBench(nthreads_nclients=list(range(1,17))),
+
+        # sysbench oltp_insert workload against MariaDB 10.5.9 docker container
+        # (net=host => localhost TCP+IP)
+        # (/var/lib/mysql on pmem partition (both innodb tables and WAL on same partition)
+        lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=list(range(1,17))),
     ]
 
     # for each fs stack: set it up, then run each experiment on it
     # (setting up storage stacks takes some time => re-use stack for all experiments)
     for fs_stack in fs_stacks:
+        fs_stack = lib.storage_stacks.XFS(lib.storage_stacks.DevPmem(store), linux_fs_mountpoint, mount_dax=True)
         with fs_stack as fs_stack:
             for bench in benchmarks:
-                # TODO: do we want to vary the --size parameter?
                 def emit_with_storage_stack(rd):
                     emit_result({
                         "storage_stack": fs_stack.as_dict(), # includes id
                         "result": rd, # includes bench id
                     })
                 bench.run(fs_stack.fsstack_mountpoint, emit_with_storage_stack) # TODO subdir for each bench?
+        break
 
 ################# MAIN SCRIPT ##################
 
