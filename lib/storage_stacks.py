@@ -1,7 +1,8 @@
 from pathlib import Path
 import lib.zfssetup
 import contextlib
-from .helpers import must_run
+from .helpers import must_run, poll_wait
+import subprocess
 
 class ZFS:
     def __init__(self, store, identity):
@@ -246,7 +247,11 @@ class LinuxFilesystem:
         return None
 
     def unmount(self):
-        must_run(["umount", self.mountpoint])
+        # poll unmount so that when SIGINT'ing python a child process that uses the mountpoint has some time to quit
+        def do_unmount():
+            st = subprocess.run(["umount", self.mountpoint])
+            return st.returncode == 0
+        poll_wait(0.2, do_unmount, "unmount", timeout=5)
 
     def __enter__(self):
         assert self.exit_stack is None # this storage stack is single-use

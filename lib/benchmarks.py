@@ -1,6 +1,21 @@
 import collections
-from .helpers import product_dict
+from .helpers import product_dict, merge_dicts
 from pathlib import Path
+from schema import Schema
+import lib.filebench
+
+
+class Benchmark:
+    def __init__(self, schema, kwargs):
+        d = schema.validate(kwargs)
+        assert '_benchmark_kwargs' not in d
+        self._benchmark_kwargs = d
+        assert isinstance(d, dict)
+        for k, v in d.items():
+            setattr(self, k, v)
+
+    def _asdict(self):
+        return merge_dicts({}, self._benchmark_kwargs)
 
 class Dummy():
     """dummy benchmark, useful for verifying all storage stack impls work"""
@@ -12,13 +27,10 @@ class Dummy():
         dummyfile.write_text("dummy")
         emit_result({"dummy": "dummy"})
 
-class Filebench(collections.namedtuple("FilebenchT", ["identity", "workload", "vars"])):
+class Filebench(Benchmark):
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        assert isinstance(self.vars, dict)
-        for v in self.vars.values():
-            assert isinstance(v, set)
+        super().__init__(Schema({"identity": str, "workload": str, "vars": {str: list}}), kwargs)
 
     def run(self, dir, emit_result):
         for vars in product_dict(self.vars):
@@ -38,7 +50,9 @@ class Filebench(collections.namedtuple("FilebenchT", ["identity", "workload", "v
             })
 
 
-class SqliteBench(collections.namedtuple("SqliteBenchT", ["num"])):
+class SqliteBench(Benchmark):
+    def __init__(self, **kwargs):
+        super().__init__(Schema({"num": int}), kwargs)
 
     def run(self, dir, emit_result):
         config = {
@@ -54,7 +68,10 @@ class SqliteBench(collections.namedtuple("SqliteBenchT", ["num"])):
             "result": res,
         })
 
-class RocksdbBench(collections.namedtuple("RocksdbBenchT", ["num", "nthreads"])):
+class RocksdbBench(Benchmark):
+
+    def __init__(self, **kwargs):
+        super().__init__(Schema({"num": int, "nthreads": [int]}), kwargs)
 
     def run(self, dir, emit_result):
         for nthreads in self.nthreads:
@@ -75,13 +92,15 @@ class RocksdbBench(collections.namedtuple("RocksdbBenchT", ["num", "nthreads"]))
             })
 
 
-class RedisSetBench(collections.namedtuple("RedisSetBenchT", ["nthreads_nclients"])):
+class RedisSetBench(Benchmark):
+    def __init__(self, **kwargs):
+        super().__init__(Schema({"nthreads_nclients": [int]}), kwargs)
 
     def run(self, dir, emit_result):
         for nthreads_nclients in self.nthreads_nclients:
             config = {
                 "redis6_checkout": Path("/root/src/redis"),
-                "dir": mountpoint,
+                "dir": dir,
                 #"nrequests": {
                 #    "type": "estimate",
                 #    "target_runtime_secs": 20,
@@ -106,12 +125,14 @@ class RedisSetBench(collections.namedtuple("RedisSetBenchT", ["nthreads_nclients
             })
 
 
-class MariaDbSysbenchOltpInsert(collections.namedtuple("MariaDbSysbenchOltpInsertT", ["nthreads"])):
+class MariaDbSysbenchOltpInsert(Benchmark):
+    def __init__(self, **kwargs):
+        super().__init__(Schema({"nthreads": [int]}), kwargs)
 
     def run(self, dir, emit_result):
         for nthreads in self.nthreads:
             config = {
-                "dir": mountpoint,
+                "dir": dir,
                 "mariadb": {
                     "docker_image": {
                         "repository": "mariadb",
@@ -119,7 +140,7 @@ class MariaDbSysbenchOltpInsert(collections.namedtuple("MariaDbSysbenchOltpInser
                     },
                 },
                 "sysbench_checkout": Path("/root/src/sysbench"),
-                "threads": 1,
+                "threads": nthreads,
                 "runtime_secs": 10,
             }
             res = lib.sysbench_mariadb.run(config)

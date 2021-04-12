@@ -110,13 +110,13 @@ def json_dump_default_to_str(val):
     return str(val)
 
 # https://stackoverflow.com/a/5228294/305410
-def product_dict(**kwargs):
+def product_dict(kwargs):
     keys = kwargs.keys()
     vals = kwargs.values()
     for instance in itertools.product(*vals):
         yield dict(zip(keys, instance))
 def _test_product_dict():
-    p = list(product_dict(**{"a": {23, 42}, "b": {"x", "y"}}))
+    p = list(product_dict({"a": {23, 42}, "b": {"x", "y"}}))
     found = [
         {"a": 23, "b": "x"},
         {"a": 42, "b": "x"},
