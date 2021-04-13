@@ -1,0 +1,1 @@
+{"storage_stack": {"fstyp": "ext4", "mount_dax": false, "blockdev_stack": {"identity": "dm-writecache"}}, "result": {"dummy": "dummy"}}
