@@ -177,10 +177,13 @@ def make_fio_config(fio_config_constomizations):
     }, fio_config_constomizations)
 
 
-def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem_only_kstats=False):
+def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem_only_kstats=False, div_size_by_numjobs=False):
     for numjobs in numjobs_values:
         assert "numjobs" not in fio_config
-        this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs })
+        size = fio_config["size"]
+        if div_size_by_numjobs:
+            size = int(size/numjobs)
+        this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs, "size": size})
         cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
 
         zil_pmem_only_measurements = {}
