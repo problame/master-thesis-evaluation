@@ -82,27 +82,30 @@ else:
     store_loaded_from_savepoint = False
 
 def system_setup():
-    lib.pmem.setup_pmem({
-    		"regions": [
-    			{
-    				"PersistentMemoryType": "AppDirectNotInterleaved",
-    				"SocketID": "0x0000",
-    				"DimmID": "0x0020",
-    				"namespaces": [
-    					{
-    						"mode": "devdax",
-    						"size": 10 * (1<<30),
-    						"configlabel": "devdax",
-    					},
-    					{
-    						"mode": "fsdax",
-    						"size": 10 * (1<<30),
-    						"configlabel": "fsdax",
-    					},
-    				]	
-    			}
-    		]
-    	}, store)
+    #lib.pmem.setup_pmem({
+    #		"regions": [
+    #			{
+    #				"PersistentMemoryType": "AppDirectNotInterleaved",
+    #				"SocketID": "0x0000",
+    #				"DimmID": "0x0020",
+    #				"namespaces": [
+    #					{
+    #						"mode": "devdax",
+    #						"size": 10 * (1<<30),
+    #						"configlabel": "devdax",
+    #					},
+    #					{
+    #						"mode": "fsdax",
+    #						"size": 10 * (1<<30),
+    #						"configlabel": "fsdax",
+    #					},
+    #				]	
+    #			}
+    #		]
+    #	}, store)
+    store.add("fsdax", "/dev/pmem0")
+    for i in [1,2,3,4]:
+        store.add("nvmepart", f"/dev/pmem{i}")
 
     # FIXME: we can't use dynamic offline/online because fio throws errors: (clock: sched_setaffinity error)
     # => use isolcpus kernel command line parameter for now FIXME check that it's set?
@@ -114,22 +117,22 @@ def system_setup():
     #            **{i: { "online": False }   for i in range(24,32)},
     #    })
 
-    PARTITIONINGS = {
-        "default": {
-            store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" },
-            "/dev/nvme1n1": { "nparts": 10, "configlabel": "nvmepart" },
-            "/dev/nvme2n1": { "nparts": 10, "configlabel": "nvmepart" },
-            "/dev/nvme3n1": { "nparts": 10, "configlabel": "nvmepart" },
-        }
-    }
+    #PARTITIONINGS = {
+    #    "default": {
+    #        store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" },
+    #        "/dev/pmem1": { "nparts": 10, "configlabel": "nvmepart" },
+    #        "/dev/pmem2": { "nparts": 10, "configlabel": "nvmepart" },
+    #        "/dev/pmem3": { "nparts": 10, "configlabel": "nvmepart" },
+    #    }
+    #}
 
-    for dev, config in PARTITIONINGS["default"].items():
-        lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
+    #for dev, config in PARTITIONINGS["default"].items():
+    #    lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
 
 
 def make_zfs_setup_config(customizations):
     common = {
-       "builddir": Path("/root/zil-pmem/zil-pmem"),
+       "builddir": Path("/home/schwarz/zil-pmem/zil-pmem"),
        "module_args": {
                 "zfs": {
                     #"zfs_nocacheflush": "0",
@@ -145,7 +148,7 @@ def make_zfs_setup_config(customizations):
        "poolname":"dut",
        "mountpoint": Path("/dut"),
        "vdevs": [
-           *store.get_all("nvmepart"),
+           *[f"nodax:{d}" for d in store.get_all("nvmepart")],
             "log",
        ],
        "create_child_datasets": {
@@ -164,7 +167,8 @@ def make_zfs_setup_config(customizations):
 
 def make_fio_config(fio_config_constomizations):
     return merge_dicts({
-			"fio_binary": Path("/usr/local/bin/fio"),
+			#"fio_binary": Path("/usr/local/bin/fio"),
+			"fio_binary": Path("/usr/bin/fio"),
             "blocksize": 1<<12, # keep in sync with zfs recordsize prop!
             "size": 200 * (1<<20), # small size so that data fits into the ARC / dbuf caches
             "runtime_seconds": 10,
@@ -251,7 +255,7 @@ def zilpmem_benchmark(emit_result):
     zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
 
 def itxg_bypass_evaluation(emit_result):
-    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,3,4,5,6,7,8,10,12,14,16,24], ["1"], ["1", "2"], [1,16,32]):
+    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,4,6,7,8,9,10,14,18,24], ["1"], ["1"], [1,8,32]):
         zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync=zvol_request_sync, itxg_bypass=itxg_bypass)
         fio_config = make_fio_config({
             "target": {
@@ -262,7 +266,7 @@ def itxg_bypass_evaluation(emit_result):
             "fsync_every": fsync_every,
         })
         run_fio_kwargs = {
-            "numjobs_values": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],
+            "numjobs_values": [1,2,4,6,8,9,10,12,14,16,17,18],
             "zil_pmem_only_kstats": True,
         }
         zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, run_fio_kwargs=run_fio_kwargs)
@@ -309,7 +313,11 @@ def fsdax_benchmark(emit_result):
         }
     }), emit_result)
 
-
+def ncommitters_scalability(emit_result):
+    for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18,20,24]:
+        zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync="0", itxg_bypass="0")
+        fio_config = make_fio_zfs_config({"sync": 1})
+        zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True})
 
 def zillwb_latency_analysis(emit_result):
 
@@ -492,9 +500,11 @@ def save_json_result(subject, prefix, result_dict):
 #
 ## block-device performance
 #block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
+#
+ncommitters_scalability(lambda rd: result_storage.save_json_result("ncommmitters_scalability_i60pc62__v1", rd))
 
 ## file-system application benchmarks
-fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
+#fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
 
 #def zil_lwb_setup():
 #    return make_zfs_setup_config({
