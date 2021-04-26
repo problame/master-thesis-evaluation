@@ -227,13 +227,14 @@ def join_impctl_and_pmem_by_iset_id(ipmctl, ndctl):
 		join[i] = d
 		ndctl_ids.add(i)
 
-	assert ndctl_ids == ipmctl_ids
+	if ndctl_ids != ipmctl_ids:
+		raise Exception(f"ndctl_ids != ipmctl_ids\nndctl_ids: {ndctl_ids}\nipmctl_ids: {ipmctl_ids}")
 
 	return join
 
 
-ref_join = join_impctl_and_pmem_by_iset_id(ipmctl_regions(), ndctl_regions_and_namespaces())
-assert len(ref_join) == 4
+#ref_join = join_impctl_and_pmem_by_iset_id(ipmctl_regions(), ndctl_regions_and_namespaces())
+#assert len(ref_join) == 4
 
 #if __name__ == "__main__":
 #	i = ipmctl_regions()
