@@ -317,10 +317,10 @@ def fsdax_benchmark(emit_result):
     }), emit_result)
 
 def ncommitters_scalability(emit_result):
-    for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18,20,24]:
+    for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
         zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync="0", itxg_bypass="0")
-        fio_config = make_fio_zfs_config({"sync": 1})
-        zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True})
+        fio_config = make_fio_zfs_config({"sync": 1, "size": (1<<30)})
+        zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True, "numjobs_values": list(range(1,24))})
 
 def zillwb_latency_analysis(emit_result):
 
@@ -504,7 +504,7 @@ def save_json_result(subject, prefix, result_dict):
 ## block-device performance
 #block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
 #
-ncommitters_scalability(lambda rd: result_storage.save_json_result("ncommmitters_scalability_i60pc62__v1", rd))
+ncommitters_scalability(lambda rd: result_storage.save_json_result("ncommmitters_scalability_i60pc62__v2", rd))
 
 ## file-system application benchmarks
 #fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
