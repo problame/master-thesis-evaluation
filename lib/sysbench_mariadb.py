@@ -232,7 +232,7 @@ def run(config):
             st = subprocess.run(args, cwd=sysbench_cwd)
             return st.returncode == 0
 
-        poll_wait(0.5, prepare, "wait for mariadb container to get ready and to run prepare step of sysbench", timeout=20)
+        poll_wait(0.5, prepare, "wait for mariadb container to get ready and to run prepare step of sysbench", timeout=30)
 
         args = args_common.copy()
         args += ["run"]

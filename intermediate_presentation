@@ -448,6 +448,7 @@ def fs_comparison(emit_result):
 
     # for each fs stack: set it up, then run each experiment on it
     # (setting up storage stacks takes some time => re-use stack for all experiments)
+    benchmark_raised_exceptions = []
     for fs_stack in fs_stacks:
         with fs_stack as fs_stack:
             for bench_i, bench in enumerate(benchmarks):
@@ -461,7 +462,17 @@ def fs_comparison(emit_result):
                         "storage_stack": fs_stack.as_dict(), # includes id
                         "result": rd, # includes bench id
                     })
-                bench.run(bench_dir, emit_with_storage_stack)
+
+                try:
+                    bench.run(bench_dir, emit_with_storage_stack)
+                except Exception as e:
+                    emit_with_storage_stack({"bench_i": bench_i, "exception": True, "exception_str": str(e)})
+                    benchmark_raised_exceptions += [e]
+
+    if len(benchmark_raised_exceptions) > 0:
+        for e in benchmark_raised_exceptions:
+            print(e)
+        raise Exception("one or more exceptions were raised during benchmark execution")
 
 ################# MAIN SCRIPT ##################
 

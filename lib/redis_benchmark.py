@@ -112,7 +112,7 @@ def run(config):
         def daemon_ready():
             st = subprocess.run([redis_cli, "-s", redis_sock, "info", "persistence"], text=True, capture_output=True)
             return st.returncode == 0 and "loading:0\n" in st.stdout
-        poll_wait(0.1, daemon_ready, "redis server to become ready", 1)
+        poll_wait(0.1, daemon_ready, "redis server to become ready", 30)
 
         assert redis_sock.exists()
 
