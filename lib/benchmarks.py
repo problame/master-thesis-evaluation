@@ -150,3 +150,42 @@ class MariaDbSysbenchOltpInsert(Benchmark):
                 "result": res,
             })
 
+class Fio4kSyncRandFsWrite(Benchmark):
+    def __init__(self, **kwargs):
+        super().__init__(Schema({
+            "numjobs_values": [int],
+        }), kwargs)
+
+    def run(self, dir, emit_result):
+        for numjobs in self.numjobs_values:
+
+            fio_config = {}
+            fio_config = merge_dicts(fio_config, {
+			    "fio_binary": Path("/usr/local/bin/fio"),
+                "blocksize": 1<<12, # keep in sync with zfs recordsize prop!
+                "runtime_seconds": 10,
+                "ramp_seconds": 2,
+                "fsync_every": 0,
+            })
+            fio_config = merge_dicts(fio_config, {
+                "size": 100 * (1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
+                "numjobs": numjobs,
+                "sync": 1,
+                "target": {
+                    "type": "fs",
+                    "filename_format_str": str(dir / "jobfile") + "{}",
+                    "require_filename_format_str_parent_is_mountpoint": False,
+                    "prewrite_mode": "delete",
+                },
+            })
+
+            fiojson = lib.fio.run(fio_config)
+
+            result = {
+                    "identity": "fio-4k-sync-rand-write",
+                    "fio_config": fio_config,
+                    "fio_jsonplus": fiojson,
+            }
+
+            emit_result(result)
+
