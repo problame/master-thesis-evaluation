@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import contextlib
+import lib.isolcpus
 import lib.cpus
 import lib.pmem
 import lib.partitioning
@@ -70,65 +71,87 @@ class Store:
 		s.d = d
 		return s
 
-resultdir = Path("./results")
-store_savepoint_filepath = resultdir / "store-savepoint.json"
-if store_savepoint_filepath.exists():
-    with open(store_savepoint_filepath, "r") as f:
-        d = json.load(f)
-        store = Store.from_dict(d)
-        store_loaded_from_savepoint = True
-else:
-    store = Store()
-    store_loaded_from_savepoint = False
+store = Store()
 
-def system_setup():
-    #lib.pmem.setup_pmem({
-    #		"regions": [
-    #			{
-    #				"PersistentMemoryType": "AppDirectNotInterleaved",
-    #				"SocketID": "0x0000",
-    #				"DimmID": "0x0020",
-    #				"namespaces": [
-    #					{
-    #						"mode": "devdax",
-    #						"size": 10 * (1<<30),
-    #						"configlabel": "devdax",
-    #					},
-    #					{
-    #						"mode": "fsdax",
-    #						"size": 10 * (1<<30),
-    #						"configlabel": "fsdax",
-    #					},
-    #				]	
-    #			}
-    #		]
-    #	}, store)
+def system_setup__manual():
+    lib.isolcpus.assert_effectively_singlesocket_system(0)
+
     store.add("fsdax", "/dev/pmem0")
     for i in [1,2,3,4]:
-        store.add("nvmepart", f"/dev/pmem{i}")
+        store.add("blockdevice", f"/dev/pmem{i}")
 
-    # FIXME: we can't use dynamic offline/online because fio throws errors: (clock: sched_setaffinity error)
-    # => use isolcpus kernel command line parameter for now FIXME check that it's set?
-    #cpus = lib.cpus.sysfs_cpus_by_number()
-    #lib.cpus.online_offline_cpus(cpus, {
-    #            **{i: { "online": True }   for i in range(0, 8)},
-    #            **{i: { "online": False }   for i in range(8,16)},
-    #            **{i: { "online": True }   for i in range(16,24)},
-    #            **{i: { "online": False }   for i in range(24,32)},
-    #    })
+def system_setup__i30pc61_single_dimm():
+    lib.isolcpus.assert_effectively_singlesocket_system(0)
 
-    #PARTITIONINGS = {
-    #    "default": {
-    #        store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" },
-    #        "/dev/pmem1": { "nparts": 10, "configlabel": "nvmepart" },
-    #        "/dev/pmem2": { "nparts": 10, "configlabel": "nvmepart" },
-    #        "/dev/pmem3": { "nparts": 10, "configlabel": "nvmepart" },
-    #    }
-    #}
+    lib.pmem.setup_pmem({
+    	"regions": [
+    		{
+    			"PersistentMemoryType": "AppDirectNotInterleaved",
+    			"SocketID": "0x0000",
+    			"DimmID": "0x0020",
+    			"namespaces": [
+    				{
+    					"mode": "devdax",
+    					"size": 10 * (1<<30),
+    					"configlabel": "devdax",
+    				},
+    				{
+    					"mode": "fsdax",
+    					"size": 10 * (1<<30),
+    					"configlabel": "fsdax",
+    				},
+    			]	
+    		}
+    	]
+    }, store)
 
-    #for dev, config in PARTITIONINGS["default"].items():
-    #    lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
+    partitioning = {
+        store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" }, # why?
+        "/dev/nvme1n1": { "nparts": 10, "configlabel": "blockdevice" },
+        "/dev/nvme2n1": { "nparts": 10, "configlabel": "blockdevice" },
+        "/dev/nvme3n1": { "nparts": 10, "configlabel": "blockdevice" },
+    }
+    for dev, config in partitioning.items():
+        lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
 
+def system_setup__i30pc62():
+    lib.isolcpus.assert_effectively_singlesocket_system(0)
+
+    lib.pmem.setup_pmem({
+    	"regions": [
+            # the dimms on socket 0 are interleaved
+    		{
+    			"PersistentMemoryType": "AppDirect",
+    			"SocketID": "0x0000",
+    			"DimmID": "0x0001, 0x0011, 0x0101, 0x0111",
+    			"namespaces": [
+    				{
+    					"mode": "devdax",
+    					"size": 10 * (1<<30),
+    					"configlabel": "devdax",
+    				},
+    				{
+    					"mode": "fsdax",
+    					"size": 10 * (1<<30),
+    					"configlabel": "fsdax",
+    				},
+    			]	
+    		},
+            # all the dimms on the disabled socket are treated as block devices (the machine has no other nvmes)
+            *[{
+         		"PersistentMemoryType": "AppDirectNotInterleaved",
+    			"SocketID": "0x0001",
+    			"DimmID": dimmid,
+    			"namespaces": [
+    				{
+    					"mode": "fsdax",
+    					"size": 100 * (1<<30),
+    					"configlabel": "blockdevice", #!!!!!!!!!
+    				},
+    			]	
+            } for dimmid in ["0x1011", "0x1101", "0x1111"]],
+    	]
+    }, store)
 
 def make_zfs_setup_config(customizations):
     common = {
@@ -148,7 +171,7 @@ def make_zfs_setup_config(customizations):
        "poolname":"dut",
        "mountpoint": Path("/dut"),
        "vdevs": [
-           *[f"nodax:{d}" for d in store.get_all("nvmepart")],
+           *[f"nodax:{d}" for d in store.get_all("blockdevice")],
             "log",
        ],
        "create_child_datasets": {
@@ -476,12 +499,11 @@ def fs_comparison(emit_result):
 
 ################# MAIN SCRIPT ##################
 
+system_setup__i30pc62()
 
-if not store_loaded_from_savepoint:
-    system_setup()
-with open(store_savepoint_filepath, "w") as f:
-    json.dump(store.to_dict(), f)
+print(store.to_dict())
 
+resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
 def save_json_result(subject, prefix, result_dict):
@@ -821,7 +843,7 @@ ncommitters_scalability(lambda rd: result_storage.save_json_result("ncommmitters
 #                "name": "wc",
 #                "size": 40*(1<<30),
 #                "blocksize": 4096,
-#                "origin_device": Path(store.get_first("nvmepart")),
+#                "origin_device": Path(store.get_first("blockdevice")),
 #                "cache_device": dm_pmem.path,
 #                # always do writeback so that it approximates the zvol
 #                "options": {

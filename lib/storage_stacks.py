@@ -39,7 +39,7 @@ class ZFS:
             "poolname":"dut",
             "mountpoint": Path("/dut"),
             "vdevs": [
-                *self.store.get_all("nvmepart"), # TODO parametrize?
+                *self.store.get_all("blockdevice"), # TODO parametrize?
                  "log",
                  self._config__log_vdev(),
             ],
@@ -185,7 +185,7 @@ class DmWritecache:
                 "name": "wc",
                 "size": 40*(1<<30),
                 "blocksize": 4096,
-                "origin_device": Path(self.store.get_first("nvmepart")),
+                "origin_device": Path(self.store.get_first("blockdevice")),
                 "cache_device": dm_pmem.path,
                 # always do writeback so that it approximates the zvol
                 "options": {
