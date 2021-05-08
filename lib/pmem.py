@@ -65,7 +65,7 @@ IpmctlSchema = Schema({
 })
 
 def ipmctl_parse_validate(output):
-	d = xmltodict.parse(ref_ipmctl_output)
+	d = xmltodict.parse(output)
 	#print(json.dumps(ref_ipmctl_output_as_dict))
 	return IpmctlSchema.validate(d)
 
