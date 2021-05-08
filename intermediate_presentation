@@ -416,7 +416,7 @@ def fs_comparison(emit_result):
     fs_stacks.extend(make_zfs_stacks(identity="zfs"))
 
     # setup all benchmarks
-    variable_values = list(range(1,17))
+    variable_values = [1,4,8]
     benchmarks = [
         lib.benchmarks.Dummy(), # verify that all the storage stack impls work
 
@@ -426,9 +426,9 @@ def fs_comparison(emit_result):
         # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
         lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": variable_values}),
 
-#        # oltp workload
-#        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
-#        # https://github.com/filebench/filebench/wiki/Predefined-personalities
+#       # oltp workload
+#       #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
+#       # https://github.com/filebench/filebench/wiki/Predefined-personalities
         lib.benchmarks.Filebench(identity="filebench-oltp", workload="oltp", vars={"ndbwriters": variable_values}),
 
         # rocksdb db_bench-inspired benchmark for sqlite, with WAL enabled, doesn't have parallelism params
@@ -444,6 +444,9 @@ def fs_comparison(emit_result):
         # (net=host => localhost TCP+IP)
         # (/var/lib/mysql on pmem partition (both innodb tables and WAL on same partition)
         lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=variable_values),
+
+        # fio benchmark
+        lib.benchmarks.Fio4kSyncRandFsWrite(numjobs_values=variable_values),
     ]
 
     # for each fs stack: set it up, then run each experiment on it
@@ -463,11 +466,13 @@ def fs_comparison(emit_result):
                         "result": rd, # includes bench id
                     })
 
-                try:
-                    bench.run(bench_dir, emit_with_storage_stack)
-                except Exception as e:
-                    emit_with_storage_stack({"bench_i": bench_i, "exception": True, "exception_str": str(e)})
-                    benchmark_raised_exceptions += [e]
+                #try:
+                bench.run(bench_dir, emit_with_storage_stack)
+                #except Exception as e:
+                #    emit_with_storage_stack({"bench_i": bench_i, "exception": True, "exception_str": str(e)})
+                #    benchmark_raised_exceptions += [e]
+
+                shutil.rmtree(bench_dir)
 
     if len(benchmark_raised_exceptions) > 0:
         for e in benchmark_raised_exceptions:
@@ -505,7 +510,7 @@ def save_json_result(subject, prefix, result_dict):
 #block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
 
 ## file-system application benchmarks
-fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
+fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v2", rd))
 
 #def zil_lwb_setup():
 #    return make_zfs_setup_config({
