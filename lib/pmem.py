@@ -254,8 +254,10 @@ def setup_pmem(desired, store):
 			"SocketID": str,
 			"DimmID": str,
 			"namespaces": [{
+				# idvars during matchup process
 				"mode": Or("fsdax", "devdax"),
 				"size": int,
+				# non-idvars
 				"configlabel": str,
 			}],
 		}],
@@ -283,9 +285,57 @@ def setup_pmem(desired, store):
 			assert found_er is not None
 			desired_to_existing_regions_mapping += [(dr, found_er)]
 
-	# => realize namespaces by destroying all and recreating them
+	# ok, the desired regions exist in the required region configuration
+	# let's look at namespaces now
+
 	for (dr, er) in desired_to_existing_regions_mapping:
-		ndctl_er = er["ndctl"]
+
+		def extract_namespace_device_and_add_to_store(label, ns):
+			labelvalue = Path("/dev/")
+			if ns["mode"] == "fsdax":
+				labelvalue = labelvalue / ns["blockdev"]
+				assert labelvalue.is_block_device()
+			elif ns["mode"] == "devdax":
+				labelvalue = labelvalue / ns["chardev"]
+				assert labelvalue.is_char_device()
+			else:
+				raise Exception(f"unexpected mode {ns['mode']}, schema should have prohibited this")
+			store.add(label, str(labelvalue))
+
+
+		# alignment for `size`, need to define it here because the matchup depends on +- align
+		align = 1 << 24 # todo get this from  region?
+
+		# try to match up namespaces by their id vars (mode, size)
+		# if all match, use them
+		# otherwise, blow away all namespaces in the region and start clean
+		# (it's our responsibility to make sure this converges on second run)
+		desired_namespaces = [dns for dns in dr['namespaces']]
+		existing_namespaces = [ens for ens in er['ndctl']['namespaces']]
+		matchups = []
+		def matchup_one():
+			for di, dns in enumerate(desired_namespaces):
+				for ei, ens in enumerate(existing_namespaces):
+					if dns["mode"] != ens["mode"]:
+						continue
+					if abs(dns["size"] - ens["size"]) > align:
+						continue
+					matchups.append((dns, ens))
+					del desired_namespaces[di]
+					del existing_namespaces[ei]
+					return True
+			return False
+		while True:
+			if not matchup_one():
+				break
+		if len(desired_namespaces) == 0 and len(existing_namespaces) == 0:
+			print("reusing existing namespaces")
+			for (dns, ens) in matchups:
+				extract_namespace_device_and_add_to_store(dns['configlabel'], ens)
+			continue # with next region
+		else:
+			print("wiping existing namespace, creating new ones")
+
 		for ens in er["ndctl"]["namespaces"]:
 			#d = Path("/sys/bus/nd/devices") / ens["dev"]
 			#assert d.exists()
@@ -296,17 +346,15 @@ def setup_pmem(desired, store):
 			
 			# https://docs.pmem.io/ndctl-user-guide/managing-namespaces#fsdax-and-devdax-capacity-considerations
 			assert dns["size"] % 4096 == 0
-			pfn_metadata_size = (dns["size"] >> 12) * 64
 			additional_undocumented_metadata_requirement_possible_label_space = 1 << 22 # it didn't work without this, the number seems clean
-			size_with_metadata = dns["size"] + pfn_metadata_size + additional_undocumented_metadata_requirement_possible_label_space
-			align = 1 << 24 # todo get this from the region?
+			size_with_metadata = dns["size"] + additional_undocumented_metadata_requirement_possible_label_space
 			if size_with_metadata % align != 0:
 				size_with_metadata += align - (size_with_metadata % align)
 			create_cmd = [
 				"ndctl", "create-namespace",
-				"--region", ndctl_er["dev"],
+				"--region", er['ndctl']["dev"],
 				"--mode", dns["mode"],
-				"--map", "dev",
+				"--map", "mem", # we have sufficient DRAM space for the struct page's, it's noticably faster this way for the large namespaces, and size overhead is predictable
 				"--size", f"{size_with_metadata}",
 				# align is not the --align parameter (that defaults to 2MiB) but it's the alignment requirement of devdax / fsdax namespaces
 			]
@@ -335,15 +383,5 @@ def setup_pmem(desired, store):
 			}).validate(l)
 			o = l["regions"][0]["namespaces"][0]
 
-			labelvalue = Path("/dev/")
-			if o["mode"] == "fsdax":
-				labelvalue = labelvalue / o["blockdev"]
-				assert labelvalue.is_block_device()
-			elif o["mode"] == "devdax":
-				labelvalue = labelvalue / o["chardev"]
-				assert labelvalue.is_char_device()
-			else:
-				raise Exception(f"unexpected mode {o['mode']}, schema should have prohibited this")
-			
-			store.add(dns["configlabel"], str(labelvalue))
+			extract_namespace_device_and_add_to_store(dns["configlabel"], o)
 
