@@ -203,15 +203,11 @@ def ndctl_regions_and_namespaces(filter_namespace=None):
 #	print(ipmctl_regions())
 #	print(ndctl_regions_and_namespaces())
 
-def ipmctl_parse_iset_id_hex_representation(s):
-	i = int(s, 16)
-	return ctypes.c_int64(i).value
-
 def join_impctl_and_pmem_by_iset_id(ipmctl, ndctl):
 	ipmctl_ids = set()
 	join = {}
 	for r in ipmctl["RegionList"]["Region"]:
-		i = ipmctl_parse_iset_id_hex_representation(r["ISetID"])
+		i = r["ISetID"]
 		d = join.get(i, {})
 		assert "ipmctl" not in d # detect duplicate iset_id
 		d["ipmctl"] = r
@@ -221,6 +217,7 @@ def join_impctl_and_pmem_by_iset_id(ipmctl, ndctl):
 	ndctl_ids = set()
 	for r in ndctl["regions"]:
 		i = r["iset_id"]
+		i = f"0x{ctypes.c_uint64(i).value:016x}"
 		d = join.get(i, {})
 		assert "ndctl" not in d # detect duplicate iset_id
 		d["ndctl"] = r	
@@ -228,7 +225,7 @@ def join_impctl_and_pmem_by_iset_id(ipmctl, ndctl):
 		ndctl_ids.add(i)
 
 	if ndctl_ids != ipmctl_ids:
-		raise Exception(f"ndctl_ids != ipmctl_ids\nndctl_ids: {ndctl_ids}\nipmctl_ids: {ipmctl_ids}")
+		raise Exception(f"ndctl_ids != ipmctl_ids\nndctl_ids: {ndctl_ids}\nipmctl_ids: {ipmctl_ids}\n  ipmctl_only: {ipmctl_ids - ndctl_ids}\n  ndctl_only: {ndctl_ids - ipmctl_ids}")
 
 	return join
 
