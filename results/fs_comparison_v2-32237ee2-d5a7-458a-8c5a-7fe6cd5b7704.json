@@ -1,0 +1,1 @@
+{"storage_stack": {"fstyp": "xfs", "mount_dax": true, "blockdev_stack": {"identity": "devpmem"}}, "result": {"dummy": "dummy"}}
