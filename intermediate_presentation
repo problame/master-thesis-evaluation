@@ -478,6 +478,9 @@ def fs_comparison(emit_result):
         # (net=host => localhost TCP+IP)
         # (/var/lib/mysql on pmem partition (both innodb tables and WAL on same partition)
         lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=variable_values),
+
+        # fio benchmark
+        lib.benchmarks.Fio4kSyncRandFsWrite(numjobs_values=variable_values),
     ]
 
     # for each fs stack: set it up, then run each experiment on it
