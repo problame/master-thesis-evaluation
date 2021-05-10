@@ -1,3 +1,6 @@
+import lib.isolcpus
+import lib.pmem
+import lib.partitioning
 
 def system_setup__manual():
     lib.isolcpus.assert_effectively_singlesocket_system(0)
@@ -6,30 +9,36 @@ def system_setup__manual():
     for i in [1,2,3,4]:
         store.add("blockdevice", f"/dev/pmem{i}")
 
-def system_setup__i30pc61_single_dimm():
-    lib.isolcpus.assert_effectively_singlesocket_system(0)
+def system_setup__i30pc61_single_dimm(store):
 
-    lib.pmem.setup_pmem({
+    store.add('zil_pmem_builddir', "/root/zil-pmem/zil-pmem")
+    store.add('fio_binary', "/usr/local/bin/fio")
+
+    isolcpus_data = lib.isolcpus.assert_effectively_singlesocket_system(0)
+
+    pmem_config = {
     	"regions": [
     		{
+                # sudo ipmctl create -goal -socket 0 PersistentMemoryType=AppDirectNotInterleaved
     			"PersistentMemoryType": "AppDirectNotInterleaved",
     			"SocketID": "0x0000",
     			"DimmID": "0x0020",
     			"namespaces": [
     				{
     					"mode": "devdax",
-    					"size": 10 * (1<<30),
+    					"size": 40 * (1<<30),
     					"configlabel": "devdax",
     				},
     				{
     					"mode": "fsdax",
-    					"size": 10 * (1<<30),
+    					"size": 40 * (1<<30),
     					"configlabel": "fsdax",
     				},
     			]	
     		}
     	]
-    }, store)
+    }
+    lib.pmem.setup_pmem(pmem_config, store)
 
     partitioning = {
         store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" }, # why?
@@ -39,6 +48,11 @@ def system_setup__i30pc61_single_dimm():
     }
     for dev, config in partitioning.items():
         lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
+
+    return {
+        "pmem_config": pmem_config,
+        "isolcpus_data": isolcpus_data,
+    }
 
 def system_setup__i30pc62(DimmID):
     isolcpus_data = lib.isolcpus.assert_effectively_singlesocket_system(0)

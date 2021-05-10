@@ -3,9 +3,8 @@ from .helpers import product_dict, merge_dicts
 from pathlib import Path
 from schema import Schema, Or
 import lib.filebench
-import lib.cpu_stats
-import lib.zfs_kstats
 import lib.fio
+from contextlib import ExitStack
 
 from .helpers import string_with_one_format_placeholder
 
@@ -154,6 +153,17 @@ class MariaDbSysbenchOltpInsert(Benchmark):
                 "result": res,
             })
 
+class FioAnalyzer:
+    def start(self):
+        raise NotImplementedError
+    def end(self):
+        raise NotImplementedError
+    def result(self):
+        class FioAnalyzerResult:
+            def to_dict(self):
+                raise NotImplementedError
+        return Result()
+
 class Fio4kSyncRandFsWrite(Benchmark):
     def __init__(self, **kwargs):
         super().__init__(Schema({
@@ -163,10 +173,10 @@ class Fio4kSyncRandFsWrite(Benchmark):
             "size": int,
             "size_mode": Or("size-per-job", "size-div-by-numjobs"),
             "dir_is_mountpoint_format_string": bool,
-            "zil_pmem_kstats": bool,
         }), kwargs)
 
-    def run(self, dir, emit_result):
+    def run(self, dir, emit_result, setup_analyzers=None):
+
         for numjobs in self.numjobs_values:
             fio_config = {}
             fio_config = merge_dicts(fio_config, {
@@ -202,41 +212,43 @@ class Fio4kSyncRandFsWrite(Benchmark):
                 },
             })
 
-            # fio config done, now setup measurements and start the benchmark
-
-            cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
-            storage_stack_stats = {}
-            if self.zil_pmem_kstats: # if we start instrumenting other storage stacks this should be extracted somehow so that the benchmark doesn't need to know specifics about the storage stack => maybe as a method on the storage stack
-                storage_stack_stats = {
-                    "itxg_bypass_stats": lib.zfs_kstats.ZilItxgBypassMeasurement(),
-                    "zvol_stats": lib.zfs_kstats.ZvolOsLinuxMeasurement(),
-                    "zil_pmem_stats": lib.zfs_kstats.ZilPmemMeasurement(),
-                    "zil_pmem_ringbuf_stats": lib.zfs_kstats.ZilPmemRingbufMeasurement(),
-                }
-            def after_rampup():
-                for m in storage_stack_stats.values():
-                    m.start()
-                cpu_time_measurement.start()
-            def after_fio_exit():
-                cpu_time_measurement.stop()
-                for m in storage_stack_stats.values():
-                    m.end()
-
-            fiojson = lib.fio.run(
-                    fio_config,
-                    call_after_rampup=after_rampup,
-                    call_after_fio_exit=after_fio_exit)
+            # fio config done, now setup analyzers and start the benchmark
 
             result = {
-                    "identity": self.identity,
-                    "fio_config": fio_config,
-                    "fio_jsonplus": fiojson,
-                    "cpu_time": {
-                        "allcpu": cpu_time_measurement.allcpu().to_dict(),
-                        "percpu": cpu_time_measurement.percpu().to_dict(orient='records'),
-                    },
-                    **{name: m.result().to_dict() for name, m in storage_stack_stats.items()},
+                "identity": self.identity,
             }
 
-            emit_result(result)
+            if not setup_analyzers:
+                setup_analyzers = lambda stack: {}
+
+            with ExitStack() as setup_teardown_stack:
+
+                analyzers = setup_analyzers(setup_teardown_stack)
+
+                after_fio_exit_stack = ExitStack()
+                def after_rampup():
+                    with ExitStack() as stack:
+                        # start all measurements and register a callback to end them
+                        for result_dict_key, m in analyzers.items():
+                            m.start()
+                            def end_and_add_to_results(m, result_dict_key):
+                                m.end()
+                                result[result_dict_key] = m.result()
+                            stack.callback(end_and_add_to_results, m, result_dict_key)
+                        # if we could start all measurements, shift the callback invocation to `after_fio_exit`
+                        after_fio_exit_stack.push(stack.pop_all())
+                def after_fio_exit():
+                    after_fio_exit_stack.close()
+
+                fiojson = lib.fio.run(
+                        fio_config,
+                        call_after_rampup=after_rampup,
+                        call_after_fio_exit=after_fio_exit)
+
+                # add fio results to results dict and emit it
+                result = merge_dicts(result, {
+                    "fio_config": fio_config,
+                    "fio_jsonplus": fiojson,
+                })
+                emit_result(result)
 

@@ -6,10 +6,7 @@ import threading
 import json
 import signal
 import copy
-
-ConfigSchema = Schema({
-    "zfs_log_write_kind": Or("upstream", "zil-pmem"),
-})
+from lib.helpers import merge_dicts
 
 def keysets(a: dict, b:dict):
     return (set(a.keys()), set(b.keys()))
@@ -38,6 +35,7 @@ class Update:
         return Update(ret)
 
 class Bpftrace:
+    """FioAnalyzer-compatible abstraction for a bpftrace script that periodically emits metrics"""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -46,7 +44,7 @@ class Bpftrace:
         self.started_measuring_at = None
         self.stopped_measuring_at = None
 
-    def start(self):
+    def setup(self):
         args = [
             #"unbuffer", # https://stackoverflow.com/a/54010626/305410
             "bpftrace", "-f", "json",
@@ -67,8 +65,8 @@ class Bpftrace:
             self.process.wait()
             raise
 
-    def start_measuring(self):
-        print("call to start_measuring()")
+    def start(self):
+        print("call to start()")
         with self.update_cv:
             if self.started_measuring_at:
                 raise Exception("can start measuring only once")
@@ -76,17 +74,17 @@ class Bpftrace:
                 raise Exception("must call start() before calling this function")
             while not self.last_update:
                 self.update_cv.wait()
-            print("start_measuring() got update, starting measuring")
+            print("start() got update, starting measuring")
             self.started_measuring_at = self.last_update.copy()
 
-    def stop_measuring(self):
-        print("call to stop_measuring()")
+    def end(self):
+        print("call to end()")
         with self.update_cv:
-            print("stop_measuring() got lock")
+            print("end() got lock")
             if self.stopped_measuring_at:
                 raise Exception("can stop measuring only once")
             if not self.started_measuring_at:
-                raise Exception("must call start_measuring() before calling this function")
+                raise Exception("must call start() before calling this function")
             self.stopped_measuring_at = self.last_update.copy()
 
         return self._measurement().d # without cv held, _measurement() locks again
@@ -95,13 +93,16 @@ class Bpftrace:
     def _measurement(self):
         with self.update_cv:
             if not self.stopped_measuring_at:
-                raise Exception("have not called stop_measuring() yet")
+                raise Exception("have not called end() yet")
             return self.stopped_measuring_at - self.started_measuring_at
 
-    def stop(self):
+    def result(self):
+        return self._measurement().d
+
+    def teardown(self):
         with self.update_cv:
-            if not self.stopped_measuring_at:
-                raise Exception("must only stop() after calling stop_measuring()")
+            if self.started_measuring_at and not self.stopped_measuring_at:
+                raise Exception("must only stop() after calling end()")
         self.process.send_signal(signal.SIGTERM)
         try:
             self.process.wait(timeout=2)
@@ -164,11 +165,13 @@ class Bpftrace:
 
         print("read_output() returning")
 
-class BpftraceUpstream(Bpftrace):
+class BpftraceZilLwbLatencyBreakdownInUpstreamTree(Bpftrace):
     script = Path(__file__).parent / "zfs_write_latencyanalysis.upstream.bpftrace"
+    def __init__(self):
+        raise NotImplementedError
     pass
 
-class BpftraceZilPmem(Bpftrace):
+class BpftraceZilLwbLatencyBreakdownInZilPmemTree(Bpftrace):
     script = Path(__file__).parent / "zfs_write_latencyanalysis.zil-pmem.bpftrace"
     update_map_values = {
         "@zfs_write",
@@ -180,20 +183,4 @@ class BpftraceZilPmem(Bpftrace):
         "@zillwb_commit_waiter__timeout",
         "@pmem_submit_bio",
     }
-    pass
-
-@contextlib.contextmanager
-def with_bpftrace(config):
-    config = ConfigSchema.validate(config)
-
-    bpft = {
-        "upstream": BpftraceUpstream,
-        "zil-pmem": BpftraceZilPmem,
-    }[config['zfs_log_write_kind']]()
-
-    bpft.start()
-    try:
-        yield bpft
-    finally:
-        bpft.stop()
 

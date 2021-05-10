@@ -17,7 +17,6 @@ import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
 import lib.devicemapper
 import lib.storage_stacks
-import lib.system_setup
 from lib.store import Store
 import lib.benchmarks
 from lib.resultstorage import ResultStorage
@@ -92,7 +91,7 @@ def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem
         if div_size_by_numjobs:
             size = int(size/numjobs)
         this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs, "size": size})
-        cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
+        cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement() # broken and we know it
 
         zil_pmem_only_measurements = {}
         if zil_pmem_only_kstats:
@@ -230,48 +229,6 @@ def ncommitters_scalability(emit_result):
         fio_config = make_fio_zfs_config({"sync": 1, "size": (1<<30)})
         zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True, "numjobs_values": list(range(1,25))})
 
-def zillwb_latency_analysis(emit_result):
-
-    zfs_setup_config, fio_config_without_numjobs = zillwb_configs({
-        "sync": 1,
-    })
-
-    with lib.zfssetup.setup_openzfs(zfs_setup_config) as _:
-
-        for numjobs in range(1, 16):
-            fio_config = merge_dicts(fio_config_without_numjobs, {"numjobs": numjobs})
-
-            latencyanalysis_config = {
-                    "zfs_log_write_kind": "zil-pmem",
-            }
-            with lib.zfs_write_latencyanalysis.with_bpftrace(latencyanalysis_config) as bpft:
-                result_queue = queue.Queue()
-                def startstop_measuring():
-                    time.sleep(2) # keep in sync with ramp_seconds
-                    bpft.start_measuring()
-                    time.sleep(8) # keep below runtime_seconds
-                    result = bpft.stop_measuring()
-                    result_queue.put(result)
-
-                ssmt = threading.Thread(target=startstop_measuring)
-                ssmt.start()
-                try:
-                    lib.fio.run(fio_config)
-                except:
-                    print("exception running fio")
-                    raise
-                finally:
-                    ssmt.join()
-                    result = result_queue.get()
-                    assert result != None
-                    emit_result(
-                        {
-                            "zfs_setup": zfs_setup_config,
-                            "fio_config": fio_config,
-                            "latency_analysis": result,
-                        }
-                    )
-
 def make_zfs_stacks(identity):
     """all ZFS stacks have recordsize / volblocksize set to 4k"""
     s = lib.storage_stacks
@@ -328,9 +285,6 @@ result_storage = ResultStorage(resultdir)
 #sync0_benchmark(lambda rd: perf_save_result("async", "perf", rd))
 #devdax_benchmark(lambda rd: perf_save_result("devdax", "perf", rd))
 #fsdax_benchmark(lambda rd: perf_save_result("fsdax", "perf", rd))
-#
-## latency breakdown
-#zillwb_latency_analysis(lambda rd: result_storage.save_json_result("latency_analysis", rd))
 #
 ## itxg bypass
 #itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6_i60pc62", rd))

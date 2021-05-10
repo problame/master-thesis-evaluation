@@ -104,7 +104,11 @@ for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
             size=1<<30,
             size_mode="size-div-by-numjobs",
             dir_is_mountpoint_format_string=True,
-            zil_pmem_kstats=True,
         )
-        bench.run(stack.dataset_mountpoint_format_string, emit_result)
+        def setup_analyzers(stack):
+            return {
+                **lib.benchmarks_fio_analyzers.zil_pmem_only_kstats(),
+                "cpu_time": lib.benchmarks_fio_analyzers.cpu_time_measurements(),
+            }
+        bench.run(stack.dataset_mountpoint_format_string, emit_result, setup_analyzers=setup_analyzers)
 

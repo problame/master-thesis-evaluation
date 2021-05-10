@@ -14,47 +14,11 @@ from pathlib import Path
 import itertools
 import lib.partitioning
 import shutil
+from evaluation_config import system_setup__i30pc61_single_dimm
 
 store = Store()
 
-store.add('zil_pmem_builddir', "/root/zil-pmem/zil-pmem")
-store.add('fio_binary', "/usr/local/bin/fio")
-
-isolcpus_data = lib.isolcpus.assert_effectively_singlesocket_system(0)
-
-pmem_config = {
-	"regions": [
-		{
-            # sudo ipmctl create -goal -socket 0 PersistentMemoryType=AppDirectNotInterleaved
-            "PersistentMemoryType": "AppDirectNotInterleaved",
-            "SocketID": "0x0000",
-            "DimmID": "0x0020",
-			"namespaces": [
-				{
-					"mode": "devdax",
-					"size": 40 * (1<<30),
-					"configlabel": "devdax",
-				},
-				{
-					"mode": "fsdax",
-					"size": 40 * (1<<30),
-					"configlabel": "fsdax",
-				},
-			]	
-		},
-	]
-}
-lib.pmem.setup_pmem(pmem_config, store)
-
-partitioning = {
-    store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" }, # why?
-    "/dev/nvme1n1": { "nparts": 10, "configlabel": "blockdevice" },
-    "/dev/nvme2n1": { "nparts": 10, "configlabel": "blockdevice" },
-    "/dev/nvme3n1": { "nparts": 10, "configlabel": "blockdevice" },
-}
-for dev, config in partitioning.items():
-    lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
-
+system_setup_data = system_setup__i30pc61_single_dimm(store)
 
 print(store.to_dict())
 
@@ -137,7 +101,6 @@ benchmarks = [
         size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
         size_mode="size-per-job",
         dir_is_mountpoint_format_string=False,
-        zil_pmem_kstats=False, # not ideal, would be nice to collect the stats
     ),
 
     # fio benchmark
@@ -148,7 +111,6 @@ benchmarks = [
         size=(1<<30),
         size_mode="size-div-by-numjobs",
         dir_is_mountpoint_format_string=False,
-        zil_pmem_kstats=False, # not ideal, would be nice to collect the stats
     ),
 
 ]
@@ -166,10 +128,10 @@ for fs_stack in fs_stacks:
 
             def emit_result(rd):
                 result_storage.save_json_result("app_benchmarks__v3", {
+                    "store": store.to_dict(),
+                    "system_setup_data": system_setup_data,
                     "storage_stack": fs_stack.as_dict(), # includes id
                     "result": rd, # includes bench id
-                    "pmem_config": pmem_config,
-                    "isolcpus_data": isolcpus_data,
                 })
 
             #try:

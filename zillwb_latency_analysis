@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+from lib.store import Store
+import lib.isolcpus
+import lib.pmem
+from lib.resultstorage import ResultStorage
+import lib.storage_stacks
+import lib.benchmarks
+import lib.benchmarks_fio_analyzers
+import lib.zfs_write_latencyanalysis
+from pathlib import Path
+import lib.partitioning
+from evaluation_config import system_setup__i30pc61_single_dimm
+
+store = Store()
+
+system_setup_data = system_setup__i30pc61_single_dimm(store)
+
+print(store.to_dict())
+
+resultdir = Path("./results")
+result_storage = ResultStorage(resultdir)
+
+storage_stack = lib.storage_stacks.ZFSLwb(store, "zfs", "0")
+with storage_stack as storage_stack:
+
+    bench = lib.benchmarks.Fio4kSyncRandFsWrite(
+        store=store,
+        identity="fio-4k-sync-rand-write--size-div-by-numjobs",
+        numjobs_values=list(range(1,17)),
+        size=1<<30,
+        size_mode="size-div-by-numjobs",
+        dir_is_mountpoint_format_string=True,
+    )
+
+    def emit_result(rd):
+        result_storage.save_json_result("zillwb_latency_analysis__v2", {
+            "store": store.to_dict(),
+            "system_setup_data": system_setup_data,
+            "storage_stack": storage_stack.as_dict(),
+            "result": rd,
+        })
+
+    def setup_analyzers(exitstack):
+        latency_analysis = lib.zfs_write_latencyanalysis.BpftraceZilLwbLatencyBreakdownInZilPmemTree()
+        latency_analysis.setup()
+        exitstack.callback(latency_analysis.teardown)
+        return {
+            "latency_analysis": latency_analysis,
+            **lib.benchmarks_fio_analyzers.zil_pmem_only_kstats(),
+            "cpu_time": lib.benchmarks_fio_analyzers.cpu_time_measurements(),
+        }
+
+    bench.run(storage_stack.dataset_mountpoint_format_string, emit_result, setup_analyzers=setup_analyzers)
+
+
