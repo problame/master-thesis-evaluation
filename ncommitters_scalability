@@ -85,16 +85,8 @@ pmem_setup_data = determine_regions_and_setup_namespaces()
 resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
-def emit_result(rd):
-    rd = {
-        "store": store.to_dict(),
-        "pmem_setup_data": pmem_setup_data,
-        "isolcpus_data": isolcpus_data,
-        **rd,
-    }
-    result_storage.save_json_result("ncommitters_scalability__v2", rd)
 
-for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
+for ncommitters in [1,2,4,6,8,12,18,24]:
     stack = lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", f"{ncommitters}")
     with stack as stack:
         bench = lib.benchmarks.Fio4kSyncRandFsWrite(
@@ -106,5 +98,16 @@ for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
             dir_is_mountpoint_format_string=True,
             zil_pmem_kstats=True,
         )
+
+        def emit_result(rd):
+            rd = {
+                "store": store.to_dict(),
+                "pmem_setup_data": pmem_setup_data,
+                "isolcpus_data": isolcpus_data,
+                "storage_stack": stack.as_dict(),
+                **rd,
+            }
+            result_storage.save_json_result("ncommitters_scalability__v3", rd)
+
         bench.run(stack.dataset_mountpoint_format_string, emit_result)
 
