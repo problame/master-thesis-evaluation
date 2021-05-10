@@ -36,7 +36,7 @@ class AbstractPrePostMeasurement:
         with self.mtx:
             assert self._start is not None
             assert self._end is not None
-            return self._end - self._start
+            return self._result_dict(self._start, self._end)
 
 import pandas as pd
 class AbstractPandasSeriesMeasurement(AbstractPrePostMeasurement):
@@ -47,6 +47,8 @@ class AbstractPandasSeriesMeasurement(AbstractPrePostMeasurement):
         d = self._parse_dict(output)
         return pd.Series(d)
 
+    def _result_dict(self, start, end):
+        return (end - start).to_dict()
 
 def test_impl_with_inputs(Implclass, start_get_output, end_get_output):
     m = Implclass()

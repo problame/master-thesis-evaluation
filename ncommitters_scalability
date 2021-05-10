@@ -87,8 +87,8 @@ result_storage = ResultStorage(resultdir)
 
 
 for ncommitters in [1,2,3,4,6,8,12,18,24]:
-    stack = lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", f"{ncommitters}")
-    with stack as stack:
+    storage_stack = lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", f"{ncommitters}")
+    with storage_stack as storage_stack:
         bench = lib.benchmarks.Fio4kSyncRandFsWrite(
             store=store,
             identity="fio-4k-sync-rand-write--size-div-by-numjobs",
@@ -96,7 +96,6 @@ for ncommitters in [1,2,3,4,6,8,12,18,24]:
             size=1<<30,
             size_mode="size-div-by-numjobs",
             dir_is_mountpoint_format_string=True,
-            zil_pmem_kstats=True,
         )
 
         def emit_result(rd):
@@ -104,10 +103,16 @@ for ncommitters in [1,2,3,4,6,8,12,18,24]:
                 "store": store.to_dict(),
                 "pmem_setup_data": pmem_setup_data,
                 "isolcpus_data": isolcpus_data,
-                "storage_stack": stack.as_dict(),
+                "storage_stack": storage_stack.as_dict(),
                 **rd,
             }
             result_storage.save_json_result("ncommitters_scalability__v3", rd)
 
-        bench.run(stack.dataset_mountpoint_format_string, emit_result)
+        def setup_analyzers(exitstack):
+            return {
+                **lib.benchmarks_fio_analyzers.zil_pmem_only_kstats(),
+                "cpu_time": lib.benchmarks_fio_analyzers.cpu_time_measurements(),
+            }
+
+        bench.run(storage_stack.dataset_mountpoint_format_string, emit_result, setup_analyzers=setup_analyzers)
 

@@ -220,7 +220,6 @@ def run(config):
             "--mysql-host=127.0.0.1",
             "--mysql-port=3306",
             f"--time={config['runtime_secs']}",
-            f"--threads={config['threads']}",
         ]
 
         sysbench_cwd = config['sysbench_checkout']
@@ -232,9 +231,12 @@ def run(config):
             st = subprocess.run(args, cwd=sysbench_cwd)
             return st.returncode == 0
 
-        poll_wait(0.5, prepare, "wait for mariadb container to get ready and to run prepare step of sysbench", timeout=20)
+        poll_wait(0.5, prepare, "wait for mariadb container to get ready and to run prepare step of sysbench", timeout=30)
+
+        print("PREPARE DONE, START BENCHMARK")
 
         args = args_common.copy()
+        args += [f"--threads={config['threads']}"] # for some reason, the `prepare` command doesn't handle connect errors if --threads is specified, but our poll_wait above relies on it
         args += ["run"]
         start = time.monotonic()
         st = must_run(args, cwd=sysbench_cwd, text=True)

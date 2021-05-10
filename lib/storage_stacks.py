@@ -1,5 +1,6 @@
 from pathlib import Path
 import lib.zfssetup
+import lib.devicemapper
 import contextlib
 from .helpers import must_run, poll_wait
 import subprocess

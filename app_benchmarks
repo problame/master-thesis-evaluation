@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+#
+# shoot-out for various application-level benchmarks for different file system stacks
+#
+# NOTE: the prior version of this benchmark was named fs_comparison_v1 and fs_comparison_v2
+
+from lib.store import Store
+import lib.isolcpus
+import lib.pmem
+from lib.resultstorage import ResultStorage
+import lib.storage_stacks
+import lib.benchmarks
+from pathlib import Path
+import itertools
+import lib.partitioning
+import shutil
+from evaluation_config import system_setup__i30pc61_single_dimm
+
+store = Store()
+
+system_setup_data = system_setup__i30pc61_single_dimm(store)
+
+print(store.to_dict())
+
+resultdir = Path("./results")
+result_storage = ResultStorage(resultdir)
+
+######################### benchmark #######################333
+
+
+def make_zfs_stacks(identity):
+    """all ZFS stacks have recordsize / volblocksize set to 4k"""
+    s = lib.storage_stacks
+    return [
+        s.ZFSLwb(store, identity, "0"),
+        s.ZFSLwb(store, identity, "1"),
+        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["3"])],
+    ]
+
+def make_blockdev_stacks():
+    s = lib.storage_stacks
+    return  [
+            *make_zfs_stacks("zvol"),
+            s.DevPmem(store),
+            s.DmWritecache(store), # TODO may want a variant with dm-verity and/or dm-raid as origin?
+    ]
+
+# setup all fs_stacks
+fs_stacks = []
+linux_filesystems = [lib.storage_stacks.XFS, lib.storage_stacks.Ext4]
+## linux filesystem stacks on all block-device stacks
+linux_fs_mountpoint = Path("/dut_linux_fs")
+if linux_fs_mountpoint.exists():
+    assert linux_fs_mountpoint.is_dir()
+    assert len(list(linux_fs_mountpoint.iterdir())) == 0
+else:
+    linux_fs_mountpoint.mkdir()
+## do it
+for (bdev_stack, linux_fs_cls) in itertools.product(make_blockdev_stacks(), linux_filesystems):
+    fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=False)]
+    if bdev_stack.is_dax_bdev() and linux_fs_cls.has_o_dax():
+        fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=True)]
+## ZFS is a combined volume manager & file system => include it in the benchmark in its fs role
+fs_stacks.extend(make_zfs_stacks(identity="zfs"))
+
+# setup the benchmarks
+variable_values = [1,4,8] # fs_comparison_v1 showed that these values are sufficient
+benchmarks = [
+    lib.benchmarks.Dummy(), # verify that all the storage stack impls work
+
+    # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded.
+    # https://github.com/filebench/filebench/wiki/Predefined-personalities
+    #
+    # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
+    lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": variable_values}),
+
+    # oltp workload
+    #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
+    # https://github.com/filebench/filebench/wiki/Predefined-personalities
+    lib.benchmarks.Filebench(identity="filebench-oltp", workload="oltp", vars={"ndbwriters": variable_values}),
+
+    # rocksdb db_bench-inspired benchmark for sqlite, with WAL enabled, doesn't have parallelism params
+    lib.benchmarks.SqliteBench(num=10_000_000),
+
+    # rocksdb db_bench fillsync benchmark (mostly a stress-test for the rocksdb WAL)
+    lib.benchmarks.RocksdbBench(num=400_000, nthreads=variable_values),
+
+    # redis-benchmark 'SET' test, redis confired appendonly yes, appendfsync always (="every redis operation is durable")
+    lib.benchmarks.RedisSetBench(nthreads_nclients=variable_values),
+
+    # sysbench oltp_insert workload against MariaDB 10.5.9 docker container
+    # (net=host => localhost TCP+IP)
+    # (/var/lib/mysql on pmem partition (both innodb tables and WAL on same partition)
+    lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=variable_values),
+
+    # fio benchmark
+    lib.benchmarks.Fio4kSyncRandFsWrite(
+        store=store,
+        identity="fio-4k-sync-rand-write--size-per-job",
+        numjobs_values=variable_values,
+        size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
+        size_mode="size-per-job",
+        dir_is_mountpoint_format_string=False,
+    ),
+
+    # fio benchmark
+    lib.benchmarks.Fio4kSyncRandFsWrite(
+        store=store,
+        identity="fio-4k-sync-rand-write--size-div-by-numjobs",
+        numjobs_values=variable_values,
+        size=(1<<30),
+        size_mode="size-div-by-numjobs",
+        dir_is_mountpoint_format_string=False,
+    ),
+
+]
+
+# for each fs stack: set it up, then run each experiment on it
+# (setting up storage stacks takes some time => re-use stack for all experiments)
+benchmark_raised_exceptions = []
+for fs_stack in fs_stacks:
+    with fs_stack as fs_stack:
+        for bench_i, bench in enumerate(benchmarks):
+            # create a separate directory within the mountpoint so that benchmarks don't interfere
+            bench_dir = fs_stack.fsstack_mountpoint / f"{bench_i}"
+            assert not bench_dir.exists()
+            bench_dir.mkdir()
+
+            def emit_result(rd):
+                result_storage.save_json_result("app_benchmarks__v3", {
+                    "store": store.to_dict(),
+                    "system_setup_data": system_setup_data,
+                    "storage_stack": fs_stack.as_dict(), # includes id
+                    "result": rd, # includes bench id
+                })
+
+            #try:
+            bench.run(bench_dir, emit_result)
+            #except Exception as e:
+            #    emit_with_storage_stack({"bench_i": bench_i, "exception": True, "exception_str": str(e)})
+            #    benchmark_raised_exceptions += [e]
+
+            shutil.rmtree(bench_dir)
+
+if len(benchmark_raised_exceptions) > 0:
+    for e in benchmark_raised_exceptions:
+        print(e)
+    raise Exception("one or more exceptions were raised during benchmark execution")
+

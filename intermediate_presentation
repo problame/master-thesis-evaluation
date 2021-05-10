@@ -17,7 +17,6 @@ import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
 import lib.devicemapper
 import lib.storage_stacks
-import lib.system_setup
 from lib.store import Store
 import lib.benchmarks
 from lib.resultstorage import ResultStorage
@@ -92,7 +91,7 @@ def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem
         if div_size_by_numjobs:
             size = int(size/numjobs)
         this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs, "size": size})
-        cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
+        cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement() # broken and we know it
 
         zil_pmem_only_measurements = {}
         if zil_pmem_only_kstats:
@@ -230,55 +229,13 @@ def ncommitters_scalability(emit_result):
         fio_config = make_fio_zfs_config({"sync": 1, "size": (1<<30)})
         zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True, "numjobs_values": list(range(1,25))})
 
-def zillwb_latency_analysis(emit_result):
-
-    zfs_setup_config, fio_config_without_numjobs = zillwb_configs({
-        "sync": 1,
-    })
-
-    with lib.zfssetup.setup_openzfs(zfs_setup_config) as _:
-
-        for numjobs in range(1, 16):
-            fio_config = merge_dicts(fio_config_without_numjobs, {"numjobs": numjobs})
-
-            latencyanalysis_config = {
-                    "zfs_log_write_kind": "zil-pmem",
-            }
-            with lib.zfs_write_latencyanalysis.with_bpftrace(latencyanalysis_config) as bpft:
-                result_queue = queue.Queue()
-                def startstop_measuring():
-                    time.sleep(2) # keep in sync with ramp_seconds
-                    bpft.start_measuring()
-                    time.sleep(8) # keep below runtime_seconds
-                    result = bpft.stop_measuring()
-                    result_queue.put(result)
-
-                ssmt = threading.Thread(target=startstop_measuring)
-                ssmt.start()
-                try:
-                    lib.fio.run(fio_config)
-                except:
-                    print("exception running fio")
-                    raise
-                finally:
-                    ssmt.join()
-                    result = result_queue.get()
-                    assert result != None
-                    emit_result(
-                        {
-                            "zfs_setup": zfs_setup_config,
-                            "fio_config": fio_config,
-                            "latency_analysis": result,
-                        }
-                    )
-
 def make_zfs_stacks(identity):
     """all ZFS stacks have recordsize / volblocksize set to 4k"""
     s = lib.storage_stacks
     return [
         s.ZFSLwb(store, identity, "0"),
         s.ZFSLwb(store, identity, "1"),
-        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["2","3"])],
+        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["3"])],
     ]
 
 def make_blockdev_stacks():
@@ -312,91 +269,7 @@ def block_device_comparison(emit_result):
                 })
             run_fio_series(fio_config, emit_with_stack_info)
 
-def fs_comparison(emit_result):
-    """shoot-out for various application-level benchmarks for different file system stacks"""
-
-
-    # setup all fs_stacks
-    fs_stacks = []
-    linux_filesystems = [lib.storage_stacks.XFS, lib.storage_stacks.Ext4]
-    ## linux fs mountpoint
-    linux_fs_mountpoint = Path("/dut_linux_fs")
-    if linux_fs_mountpoint.exists():
-        assert linux_fs_mountpoint.is_dir()
-        assert len(list(linux_fs_mountpoint.iterdir())) == 0
-    else:
-        linux_fs_mountpoint.mkdir()
-    ## do it
-    for (bdev_stack, linux_fs_cls) in itertools.product(make_blockdev_stacks(), linux_filesystems):
-        fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=False)]
-        if bdev_stack.is_dax_bdev() and linux_fs_cls.has_o_dax():
-            fs_stacks += [linux_fs_cls(bdev_stack, linux_fs_mountpoint, mount_dax=True)]
-    ## ZFS is a combined volume manager & file system => include it in the benchmark in its fs role
-    fs_stacks.extend(make_zfs_stacks(identity="zfs"))
-
-    # setup all benchmarks
-    variable_values = list(range(1,17))
-    benchmarks = [
-        lib.benchmarks.Dummy(), # verify that all the storage stack impls work
-
-        # Emulates I/O activity of a simple mail server that stores each e-mail in a separate file (/var/mail/ server). The workload consists of a multi-threaded set of create-append-sync, read-append-sync, read and delete operations in a single directory. 16 threads are used by default. The workload generated is somewhat similar to Postmark but multi-threaded. 
-        # https://github.com/filebench/filebench/wiki/Predefined-personalities
-        #
-        # metadata intensive according to Son et al., “High-Performance Transaction Processing in Journaling File Systems.”
-        lib.benchmarks.Filebench(identity="filebench-varmail", workload="varmail", vars={"nthreads": variable_values}),
-
-#        # oltp workload
-#        #A database emulator. This workload performs file system operations using Oracle 9i I/O model. It tests the performance of small random reads and writes, and is sensitive to the latency of moderate size (128k+) synchronous writes to the log file. By default launches 200 reader processes, 10 processes for asynchronous writing, and a log writer. The emulation includes the use of ISM shared memory as per Oracle, Sybase, etc. which is critical to I/O efficiency.
-#        # https://github.com/filebench/filebench/wiki/Predefined-personalities
-        lib.benchmarks.Filebench(identity="filebench-oltp", workload="oltp", vars={"ndbwriters": variable_values}),
-
-        # rocksdb db_bench-inspired benchmark for sqlite, with WAL enabled, doesn't have parallelism params
-        lib.benchmarks.SqliteBench(num=10_000_000),
-
-        # rocksdb db_bench fillsync benchmark (mostly a stress-test for the rocksdb WAL)
-        lib.benchmarks.RocksdbBench(num=400_000, nthreads=variable_values),
-
-        # redis-benchmark 'SET' test, redis confired appendonly yes, appendfsync always (="every redis operation is durable")
-        lib.benchmarks.RedisSetBench(nthreads_nclients=variable_values),
-
-        # sysbench oltp_insert workload against MariaDB 10.5.9 docker container
-        # (net=host => localhost TCP+IP)
-        # (/var/lib/mysql on pmem partition (both innodb tables and WAL on same partition)
-        lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=variable_values),
-
-        # fio benchmark
-        lib.benchmarks.Fio4kSyncRandFsWrite(
-            store=store,
-            identity="fio-4k-sync-rand-write--size-per-job",
-            numjobs_values=variable_values,
-            size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
-            size_mode="size-per-job",
-            dir_is_mountpoint_format_string=False,
-            zil_pmem_kstats=False, # not ideal, would be nice to collect the stats
-        ),
-    ]
-
-    # for each fs stack: set it up, then run each experiment on it
-    # (setting up storage stacks takes some time => re-use stack for all experiments)
-    for fs_stack in fs_stacks:
-        with fs_stack as fs_stack:
-            for bench_i, bench in enumerate(benchmarks):
-                # create a separate directory within the mountpoint so that benchmarks don't interfere
-                bench_dir = fs_stack.fsstack_mountpoint / f"{bench_i}"
-                assert not bench_dir.exists()
-                bench_dir.mkdir()
-
-                def emit_with_storage_stack(rd):
-                    emit_result({
-                        "storage_stack": fs_stack.as_dict(), # includes id
-                        "result": rd, # includes bench id
-                    })
-                bench.run(bench_dir, emit_with_storage_stack)
-
 ################# MAIN SCRIPT ##################
-
-
-system_setup = system_setup__i30pc62("0x0001, 0x0011, 0x0101, 0x0111")
 
 print(store.to_dict())
 
@@ -413,18 +286,11 @@ result_storage = ResultStorage(resultdir)
 #devdax_benchmark(lambda rd: perf_save_result("devdax", "perf", rd))
 #fsdax_benchmark(lambda rd: perf_save_result("fsdax", "perf", rd))
 #
-## latency breakdown
-#zillwb_latency_analysis(lambda rd: result_storage.save_json_result("latency_analysis", rd))
-#
 ## itxg bypass
 #itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6_i60pc62", rd))
 #
 ## block-device performance
 #block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
-
-
-## file-system application benchmarks
-#fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v1", rd))
 
 #def zil_lwb_setup():
 #    return make_zfs_setup_config({
