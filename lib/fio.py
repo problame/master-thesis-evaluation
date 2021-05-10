@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import concurrent.futures
+from contextlib import ExitStack
 
 TargetFsConfigSchema = Schema({
     "type": "fs",
@@ -73,16 +74,24 @@ def _run_fio(config, config_overrides, append_cmdline, call_after_rampup=None, c
     ]
 
     starting_fio_event = threading.Event()
+    fio_exited_or_panicked = threading.Event()
 
     def run_fio_thread():
         tempdir = tempfile.TemporaryDirectory(prefix="run_fio_benchmark_", suffix="__run_fio")
         d = Path(tempdir.name)
         assert len(list(d.iterdir())) == 0
 
+        print("setup files")
+        must_run(args + ["--create_only=1"], cwd=d)
+
+        print("starting fio")
         starting_fio_event.set()
-        must_run(args, cwd=d)
-        if call_after_fio_exit is not None:
-            call_after_fio_exit()
+        try:
+            must_run(args, cwd=d)
+        except:
+            raise
+        finally:
+            fio_exited_or_panicked.set()
 
         output_filepath = d / output_filename
         assert output_filepath.exists()
@@ -91,21 +100,31 @@ def _run_fio(config, config_overrides, append_cmdline, call_after_rampup=None, c
         tempdir.cleanup()
         return ret
 
-    def call_after_rampup_thread():
-        if call_after_rampup:
-            # wait for fio to start
-            starting_fio_event.wait()
-            # now wait for rampup time
-            time.sleep(config["ramp_seconds"])
-            # now call function
-            call_after_rampup()
-
     # dirty but will work...
     with concurrent.futures.ThreadPoolExecutor() as executor:
         fio = executor.submit(run_fio_thread)
-        call = executor.submit(call_after_rampup_thread)
-        call.result()
-        return fio.result()
+        try:
+            # wait for fio to start
+            starting_fio_event.wait()
+            # now wait for rampup time to pass
+            # (this is somewhat accurate because we
+            # run fio with --create_only before
+            # we trigger the event)
+            time.sleep(config["ramp_seconds"])
+
+            with ExitStack() as stack:
+                # now invoke the post-rampup pre exec callback
+                call_after_rampup()
+                # and queue the post-exit callback
+                stack.callback(call_after_fio_exit)
+                # then wait for fio to exit
+                fio_exited_or_panicked.wait() # this is guaranteed to bet set, see above
+
+            return fio.result()
+        except:
+            print("exception while running fio, waiting for fio to finish")
+            fio.result()
+            raise
 
 def _syncwrite_benchmark_fs(config, **kwargs):
 
