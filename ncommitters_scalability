@@ -86,7 +86,7 @@ resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
 
-for ncommitters in [1,2,4,6,8,12,18,24]:
+for ncommitters in [1,2,3,4,6,8,12,18,24]:
     stack = lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", f"{ncommitters}")
     with stack as stack:
         bench = lib.benchmarks.Fio4kSyncRandFsWrite(
