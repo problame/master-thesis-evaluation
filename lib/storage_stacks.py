@@ -27,7 +27,7 @@ class ZFS:
 
     def _make_config(self):
         return {
-            "builddir": Path("/root/zil-pmem/zil-pmem"),
+            "builddir": Path(self.store.get_one('zil_pmem_builddir')),
             "module_args": {
                 "zfs": self._config__zfs_module_args(),
             },
@@ -39,7 +39,7 @@ class ZFS:
             "poolname":"dut",
             "mountpoint": Path("/dut"),
             "vdevs": [
-                *self.store.get_all("nvmepart"), # TODO parametrize?
+                *[f"nodax:{d}" for d in self.store.get_all("blockdevice")],
                  "log",
                  self._config__log_vdev(),
             ],
@@ -69,6 +69,10 @@ class ZFS:
             return None
         # keep in sync with config above!
         return Path("/dut/ds0")
+
+    @property
+    def dataset_mountpoint_format_string(self):
+        return "/dut/ds{}"
 
     def as_dict(self):
         return {
@@ -185,7 +189,7 @@ class DmWritecache:
                 "name": "wc",
                 "size": 40*(1<<30),
                 "blocksize": 4096,
-                "origin_device": Path(self.store.get_first("nvmepart")),
+                "origin_device": Path(self.store.get_first("blockdevice")),
                 "cache_device": dm_pmem.path,
                 # always do writeback so that it approximates the zvol
                 "options": {

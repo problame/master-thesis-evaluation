@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import contextlib
+import lib.isolcpus
 import lib.cpus
 import lib.pmem
 import lib.partitioning
@@ -16,6 +17,8 @@ import lib.zfs_write_latencyanalysis
 import lib.zfs_kstats
 import lib.devicemapper
 import lib.storage_stacks
+import lib.system_setup
+from lib.store import Store
 import lib.benchmarks
 from lib.resultstorage import ResultStorage
 from pathlib import Path
@@ -32,104 +35,13 @@ import time
 import queue
 import itertools
 
-class Store:
-	d = {}
-	def add(self, configlabel, value):
-		assert isinstance(configlabel, str)
-		assert isinstance(value, str)
-		l = self.d.get(configlabel, [])
-		l.append(value)
-		self.d[configlabel] = l
-
-	def get_one(self, configlabel):
-		assert isinstance(configlabel, str)
-		l = self.d.get(configlabel, [])
-		assert len(l) == 1
-		return l[0]
-
-	def get_all(self, configlabel):
-		assert isinstance(configlabel, str)
-		return self.d.get(configlabel, [])
-
-	def get_first(self, configlabel):
-		assert isinstance(configlabel, str)
-		all = self.get_all(configlabel)
-		assert len(all) >= 1
-		return all[0]
-
-	def to_dict(self):
-		return copy.deepcopy(self.d)
-
-	def from_dict(d):
-		for k, v in d.items():
-			assert isinstance(k, str)
-			assert isinstance(v, list)
-			for i in v:
-				assert isinstance(i, str)
-		s = Store()
-		s.d = d
-		return s
-
-resultdir = Path("./results")
-store_savepoint_filepath = resultdir / "store-savepoint.json"
-if store_savepoint_filepath.exists():
-    with open(store_savepoint_filepath, "r") as f:
-        d = json.load(f)
-        store = Store.from_dict(d)
-        store_loaded_from_savepoint = True
-else:
-    store = Store()
-    store_loaded_from_savepoint = False
-
-def system_setup():
-    lib.pmem.setup_pmem({
-    		"regions": [
-    			{
-    				"PersistentMemoryType": "AppDirectNotInterleaved",
-    				"SocketID": "0x0000",
-    				"DimmID": "0x0020",
-    				"namespaces": [
-    					{
-    						"mode": "devdax",
-    						"size": 10 * (1<<30),
-    						"configlabel": "devdax",
-    					},
-    					{
-    						"mode": "fsdax",
-    						"size": 10 * (1<<30),
-    						"configlabel": "fsdax",
-    					},
-    				]	
-    			}
-    		]
-    	}, store)
-
-    # FIXME: we can't use dynamic offline/online because fio throws errors: (clock: sched_setaffinity error)
-    # => use isolcpus kernel command line parameter for now FIXME check that it's set?
-    #cpus = lib.cpus.sysfs_cpus_by_number()
-    #lib.cpus.online_offline_cpus(cpus, {
-    #            **{i: { "online": True }   for i in range(0, 8)},
-    #            **{i: { "online": False }   for i in range(8,16)},
-    #            **{i: { "online": True }   for i in range(16,24)},
-    #            **{i: { "online": False }   for i in range(24,32)},
-    #    })
-
-    PARTITIONINGS = {
-        "default": {
-            store.get_one("fsdax"): { "noparts": True, "configlabel": "pmemdevice" },
-            "/dev/nvme1n1": { "nparts": 10, "configlabel": "nvmepart" },
-            "/dev/nvme2n1": { "nparts": 10, "configlabel": "nvmepart" },
-            "/dev/nvme3n1": { "nparts": 10, "configlabel": "nvmepart" },
-        }
-    }
-
-    for dev, config in PARTITIONINGS["default"].items():
-        lib.partitioning.partition_disk({"devfspath": dev, **config}, store)
-
+store = Store()
+store.add('zil_pmem_builddir', "/root/zil-pmem/zil-pmem")
+store.add('fio_binary', "/usr/local/bin/fio")
 
 def make_zfs_setup_config(customizations):
     common = {
-       "builddir": Path("/root/zil-pmem/zil-pmem"),
+       "builddir": Path(store.get_one('zil_pmem_builddir')),
        "module_args": {
                 "zfs": {
                     #"zfs_nocacheflush": "0",
@@ -145,7 +57,7 @@ def make_zfs_setup_config(customizations):
        "poolname":"dut",
        "mountpoint": Path("/dut"),
        "vdevs": [
-           *store.get_all("nvmepart"),
+           *[f"nodax:{d}" for d in store.get_all("blockdevice")],
             "log",
        ],
        "create_child_datasets": {
@@ -164,7 +76,7 @@ def make_zfs_setup_config(customizations):
 
 def make_fio_config(fio_config_constomizations):
     return merge_dicts({
-			"fio_binary": Path("/usr/local/bin/fio"),
+			"fio_binary": Path(self.store.get_one('fio_binary')),
             "blocksize": 1<<12, # keep in sync with zfs recordsize prop!
             "size": 200 * (1<<20), # small size so that data fits into the ARC / dbuf caches
             "runtime_seconds": 10,
@@ -173,10 +85,13 @@ def make_fio_config(fio_config_constomizations):
     }, fio_config_constomizations)
 
 
-def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem_only_kstats=False):
+def run_fio_series(fio_config, emit_result, numjobs_values=range(1,16), zil_pmem_only_kstats=False, div_size_by_numjobs=False):
     for numjobs in numjobs_values:
         assert "numjobs" not in fio_config
-        this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs })
+        size = fio_config["size"]
+        if div_size_by_numjobs:
+            size = int(size/numjobs)
+        this_fio_config = merge_dicts(fio_config, { "numjobs": numjobs, "size": size})
         cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
 
         zil_pmem_only_measurements = {}
@@ -251,7 +166,7 @@ def zilpmem_benchmark(emit_result):
     zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
 
 def itxg_bypass_evaluation(emit_result):
-    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,3,4,5,6,7,8,10,12,14,16,24], ["1"], ["1", "2"], [1,16,32]):
+    for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,4,6,7,8,9,10,14,18,24], ["1"], ["1"], [1,8,32]):
         zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync=zvol_request_sync, itxg_bypass=itxg_bypass)
         fio_config = make_fio_config({
             "target": {
@@ -262,7 +177,7 @@ def itxg_bypass_evaluation(emit_result):
             "fsync_every": fsync_every,
         })
         run_fio_kwargs = {
-            "numjobs_values": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],
+            "numjobs_values": [1,2,4,6,8,9,10,12,14,16,17,18],
             "zil_pmem_only_kstats": True,
         }
         zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, run_fio_kwargs=run_fio_kwargs)
@@ -309,7 +224,11 @@ def fsdax_benchmark(emit_result):
         }
     }), emit_result)
 
-
+def ncommitters_scalability(emit_result):
+    for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
+        zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync="0", itxg_bypass="0")
+        fio_config = make_fio_zfs_config({"sync": 1, "size": (1<<30)})
+        zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, {"zil_pmem_only_kstats": True, "div_size_by_numjobs": True, "numjobs_values": list(range(1,25))})
 
 def zillwb_latency_analysis(emit_result):
 
@@ -446,7 +365,15 @@ def fs_comparison(emit_result):
         lib.benchmarks.MariaDbSysbenchOltpInsert(nthreads=variable_values),
 
         # fio benchmark
-        lib.benchmarks.Fio4kSyncRandFsWrite(numjobs_values=variable_values),
+        lib.benchmarks.Fio4kSyncRandFsWrite(
+            store=store,
+            identity="fio-4k-sync-rand-write--size-per-job",
+            numjobs_values=variable_values,
+            size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
+            size_mode="size-per-job",
+            dir_is_mountpoint_format_string=False,
+            zil_pmem_kstats=False, # not ideal, would be nice to collect the stats
+        ),
     ]
 
     # for each fs stack: set it up, then run each experiment on it
@@ -482,32 +409,32 @@ def fs_comparison(emit_result):
 ################# MAIN SCRIPT ##################
 
 
-if not store_loaded_from_savepoint:
-    system_setup()
-with open(store_savepoint_filepath, "w") as f:
-    json.dump(store.to_dict(), f)
+system_setup = system_setup__i30pc62("0x0001, 0x0011, 0x0101, 0x0111")
 
+print(store.to_dict())
+
+resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
-def save_json_result(subject, prefix, result_dict):
-    result_dict = merge_dicts(result_dict, {"test_subject": subject})
-    result_storage.save_json_result(prefix, result_dict)
-
 ## perf benchmarks
-#zilpmem_benchmark(lambda rd: save_json_result("zil-pmem", "perf", rd))
-#zillwb_benchmark(lambda rd: save_json_result("zil-lwb", "perf", rd))
-#sync0_benchmark(lambda rd: save_json_result("async", "perf", rd))
-#devdax_benchmark(lambda rd: save_json_result("devdax", "perf", rd))
-#fsdax_benchmark(lambda rd: save_json_result("fsdax", "perf", rd))
+#def perf_save_result(subject, prefix, result_dict):
+#    result_dict = merge_dicts(result_dict, {"test_subject": subject})
+#    result_storage.save_json_result(prefix, result_dict)
+#zilpmem_benchmark(lambda rd: perf_save_result("zil-pmem", "perf", rd))
+#zillwb_benchmark(lambda rd: perf_save_result("zil-lwb", "perf", rd))
+#sync0_benchmark(lambda rd: perf_save_result("async", "perf", rd))
+#devdax_benchmark(lambda rd: perf_save_result("devdax", "perf", rd))
+#fsdax_benchmark(lambda rd: perf_save_result("fsdax", "perf", rd))
 #
 ## latency breakdown
-#zillwb_latency_analysis(lambda rd: save_json_result(None, "latency_analysis", rd))
+#zillwb_latency_analysis(lambda rd: result_storage.save_json_result("latency_analysis", rd))
 #
 ## itxg bypass
-#itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6", rd))
+#itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6_i60pc62", rd))
 #
 ## block-device performance
 #block_device_comparison(lambda rd: result_storage.save_json_result("blockdev_comparison_v1", rd))
+
 
 ## file-system application benchmarks
 fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v2", rd))
@@ -824,7 +751,7 @@ fs_comparison(lambda rd: result_storage.save_json_result("fs_comparison_v2", rd)
 #                "name": "wc",
 #                "size": 40*(1<<30),
 #                "blocksize": 4096,
-#                "origin_device": Path(store.get_first("nvmepart")),
+#                "origin_device": Path(store.get_first("blockdevice")),
 #                "cache_device": dm_pmem.path,
 #                # always do writeback so that it approximates the zvol
 #                "options": {

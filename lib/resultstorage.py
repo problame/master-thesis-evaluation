@@ -36,5 +36,6 @@ class ResultStorage:
                 except e:
                     raise Exception(f"cannot process result file {filepath}") from e
                 d["file"] = filepath
+                d['file_ctime'] = filepath.stat().st_ctime
                 yield d
             
