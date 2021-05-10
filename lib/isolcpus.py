@@ -103,3 +103,10 @@ def assert_effectively_singlesocket_system(numanode):
         cmdline = ",".join(isolcpus)
         raise Exception(f"use kernel command line isolcpus={cmdline}\n\n  desired: {desired}\n  current: {current}")
 
+    return {
+        "possible_cpus": possible_cpus,
+        "isolated_cpus": isolated_cpus,
+        "node_cpus": node_cpus,
+        "node_number": numanode,
+        "node_path": node_cpulist_path,
+    }

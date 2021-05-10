@@ -1,9 +1,13 @@
 import collections
 from .helpers import product_dict, merge_dicts
 from pathlib import Path
-from schema import Schema
+from schema import Schema, Or
 import lib.filebench
+import lib.cpu_stats
+import lib.zfs_kstats
+import lib.fio
 
+from .helpers import string_with_one_format_placeholder
 
 class Benchmark:
     def __init__(self, schema, kwargs):
@@ -153,38 +157,85 @@ class MariaDbSysbenchOltpInsert(Benchmark):
 class Fio4kSyncRandFsWrite(Benchmark):
     def __init__(self, **kwargs):
         super().__init__(Schema({
+            "store": object,
+            "identity": str,
             "numjobs_values": [int],
+            "size": int,
+            "size_mode": Or("size-per-job", "size-div-by-numjobs"),
+            "dir_is_mountpoint_format_string": bool,
+            "zil_pmem_kstats": bool,
         }), kwargs)
 
     def run(self, dir, emit_result):
         for numjobs in self.numjobs_values:
-
             fio_config = {}
             fio_config = merge_dicts(fio_config, {
-			    "fio_binary": Path("/usr/local/bin/fio"),
+			    "fio_binary": Path(self.store.get_one('fio_binary')),
                 "blocksize": 1<<12, # keep in sync with zfs recordsize prop!
                 "runtime_seconds": 10,
                 "ramp_seconds": 2,
                 "fsync_every": 0,
-            })
-            fio_config = merge_dicts(fio_config, {
-                "size": 100 * (1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
                 "numjobs": numjobs,
                 "sync": 1,
+            })
+
+            if self.size_mode == "size-per-job":
+                size = self.size
+            elif self.size_mode == "size-div-by-numjobs":
+                size = self.size // numjobs
+            fio_config = merge_dicts(fio_config, {
+                "size": size,
+            })
+
+            if self.dir_is_mountpoint_format_string:
+                filename_format_str = dir + "/fio_jobfile"
+                require_mountpoint = True
+            else:
+                filename_format_str = str(dir / "fio_jobfile{}")
+                require_mountpoint = False
+            fio_config = merge_dicts(fio_config, {
                 "target": {
                     "type": "fs",
-                    "filename_format_str": str(dir / "jobfile") + "{}",
-                    "require_filename_format_str_parent_is_mountpoint": False,
+                    "filename_format_str": filename_format_str,
+                    "require_filename_format_str_parent_is_mountpoint": require_mountpoint,
                     "prewrite_mode": "delete",
                 },
             })
 
-            fiojson = lib.fio.run(fio_config)
+            # fio config done, now setup measurements and start the benchmark
+
+            cpu_time_measurement = lib.cpu_stats.CPUTimeMeasurement()
+            storage_stack_stats = {}
+            if self.zil_pmem_kstats: # if we start instrumenting other storage stacks this should be extracted somehow so that the benchmark doesn't need to know specifics about the storage stack => maybe as a method on the storage stack
+                storage_stack_stats = {
+                    "itxg_bypass_stats": lib.zfs_kstats.ZilItxgBypassMeasurement(),
+                    "zvol_stats": lib.zfs_kstats.ZvolOsLinuxMeasurement(),
+                    "zil_pmem_stats": lib.zfs_kstats.ZilPmemMeasurement(),
+                    "zil_pmem_ringbuf_stats": lib.zfs_kstats.ZilPmemRingbufMeasurement(),
+                }
+            def after_rampup():
+                for m in storage_stack_stats.values():
+                    m.start()
+                cpu_time_measurement.start()
+            def after_fio_exit():
+                cpu_time_measurement.stop()
+                for m in storage_stack_stats.values():
+                    m.end()
+
+            fiojson = lib.fio.run(
+                    fio_config,
+                    call_after_rampup=after_rampup,
+                    call_after_fio_exit=after_fio_exit)
 
             result = {
-                    "identity": "fio-4k-sync-rand-write",
+                    "identity": self.identity,
                     "fio_config": fio_config,
                     "fio_jsonplus": fiojson,
+                    "cpu_time": {
+                        "allcpu": cpu_time_measurement.allcpu().to_dict(),
+                        "percpu": cpu_time_measurement.percpu().to_dict(orient='records'),
+                    },
+                    **{name: m.result().to_dict() for name, m in storage_stack_stats.items()},
             }
 
             emit_result(result)

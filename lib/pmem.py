@@ -170,6 +170,7 @@ NdctlNamespaceSchema = Schema({
 	"dev": str,	
 	"mode": Or("fsdax", "devdax", "raw"),
 	"size": int,
+	Optional("name", default=None): str,
 	str: object,
 }) # factored out for usage by ndctl create-namespace call
 
@@ -197,8 +198,7 @@ def ndctl_regions_and_namespaces(filter_namespace=None):
 		cmd += ["--namespace", filter_namespace]
 	o = subprocess.run(cmd, check=True, text=True, capture_output=True).stdout
 	o = json.loads(o)
-	return  NdctlSchema.validate(o)
-
+	return NdctlSchema.validate(o)
 #if __name__ == "__main__":
 #	print(ipmctl_regions())
 #	print(ndctl_regions_and_namespaces())
@@ -238,6 +238,9 @@ def join_impctl_and_pmem_by_iset_id(ipmctl, ndctl):
 #	n = ndctl_regions_and_namespaces()
 #	j = join_impctl_and_pmem_by_iset_id(i, n)
 #	print(json.dumps(j))
+
+class RegionReconfigurationRequiredError(Exception):
+    pass
 
 def setup_pmem(desired, store):
 	ir = ipmctl_regions()
@@ -280,7 +283,7 @@ def setup_pmem(desired, store):
 				found_er = er
 		assert found >= 0 and found <= 1 # otherwise ambiguous match
 		if found == 0:
-			raise Exception(f"reconfiguring regions is not supported, user must configure the region manually: \n{json.dumps(dr)}")
+			raise RegionReconfigurationRequiredError(f"reconfiguring regions is not supported, user must configure the region manually: \n{json.dumps(dr)}")
 		else:
 			assert found_er is not None
 			desired_to_existing_regions_mapping += [(dr, found_er)]
