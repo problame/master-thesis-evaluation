@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+from lib.store import Store
+import lib.isolcpus
+import lib.pmem
+from lib.resultstorage import ResultStorage
+import lib.storage_stacks
+import lib.benchmarks
+import lib.benchmarks_fio_analyzers
+import lib.zfs_write_latencyanalysis
+from pathlib import Path
+import lib.partitioning
+from evaluation_config import system_setup__i30pc61_single_dimm
+import json
+
+store = Store()
+
+system_setup_data = system_setup__i30pc61_single_dimm(store)
+
+print(store.to_dict())
+
+resultdir = Path("./results")
+result_storage = ResultStorage(resultdir)
+
+stacks = [
+    lib.storage_stacks.ZFSLwb(store, "zfs", "0"),
+    lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", "3"),
+]
+
+for storage_stack in stacks:
+    with storage_stack as storage_stack:
+
+        def emit_result(rd):
+            result_storage.save_json_result("comparison_zil_overhead_lwb_vs_pmem__v1", {
+                "store": store.to_dict(),
+                "system_setup_data": system_setup_data,
+                "storage_stack": storage_stack.as_dict(),
+                "result": rd,
+            })
+
+        def setup_analyzers(exitstack):
+            latency_analysis = lib.zfs_write_latencyanalysis.BpftraceComparisonZilLwbZilPmemInZilPmemTree()
+            latency_analysis.setup()
+            exitstack.callback(latency_analysis.teardown)
+            return {
+                "latency_analysis": latency_analysis,
+                **lib.benchmarks_fio_analyzers.zil_pmem_only_kstats(),
+                "cpu_time": lib.benchmarks_fio_analyzers.cpu_time_measurements(),
+            }
+
+        bench = lib.benchmarks.Fio4kSyncRandFsWrite(
+            store=store,
+            identity="fio-4k-sync-rand-write--size-per-job",
+            numjobs_values=list(range(1, 9)),
+            size=100*(1<<20),
+            size_mode="size-per-job",
+            dir_is_mountpoint_format_string=True,
+        )
+
+        bench.run(storage_stack.dataset_mountpoint_format_string, emit_result, setup_analyzers=setup_analyzers)
+

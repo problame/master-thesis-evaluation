@@ -166,13 +166,13 @@ class Bpftrace:
         print("read_output() returning")
 
 class BpftraceZilLwbLatencyBreakdownInUpstreamTree(Bpftrace):
-    script = Path(__file__).parent / "zfs_write_latencyanalysis.upstream.bpftrace"
+    script = Path(__file__).parent / "zfs_write_latencyanalysis.zil_lwb_detailed.upstream.bpftrace"
     def __init__(self):
         raise NotImplementedError
     pass
 
 class BpftraceZilLwbLatencyBreakdownInZilPmemTree(Bpftrace):
-    script = Path(__file__).parent / "zfs_write_latencyanalysis.zil-pmem.bpftrace"
+    script = Path(__file__).parent / "zfs_write_latencyanalysis.zil_lwb_detailed.zil-pmem.bpftrace"
     update_map_values = {
         "@zfs_write",
         "@zfs_write_count",
@@ -184,3 +184,13 @@ class BpftraceZilLwbLatencyBreakdownInZilPmemTree(Bpftrace):
         "@pmem_submit_bio",
     }
 
+class BpftraceComparisonZilLwbZilPmemInZilPmemTree(Bpftrace):
+    script = Path(__file__).parent / "zfs_write_latencyanalysis.comparison_zil_lwb_vs_zil_pmem.zil-pmem.bpftrace"
+    update_map_values = {
+        "@zfs_write",
+        "@zfs_write_count",
+        "@zil_fill_commit_list",
+        "@zil_commit",
+        "@zfs_log_write",
+        "@pmem_write_time",
+    }
