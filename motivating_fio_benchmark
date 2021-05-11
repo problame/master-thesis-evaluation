@@ -45,18 +45,8 @@ def fio_size_per_job():
         size_mode="size-per-job",
         dir_is_mountpoint_format_string=False,
     )
-def fio_size_div_by_numjobs():
-    return lib.benchmarks.Fio4kSyncRandFsWrite(
-        store=store,
-        identity="fio-4k-sync-rand-write--size-div-by-numjobs",
-        numjobs_values=variable_values,
-        size=(1<<30),
-        size_mode="size-div-by-numjobs",
-        dir_is_mountpoint_format_string=False,
-    )
 benchmark_factories = [
     fio_size_per_job,
-    fio_size_div_by_numjobs,
 ]
 
 def make_subject(sstack_kind, sstack_cls, *sstack_args):
@@ -67,7 +57,7 @@ def make_subject(sstack_kind, sstack_cls, *sstack_args):
             with sstack as sstack:
 
                 def emit_result(rd):
-                    result_storage.save_json_result("motivating_fio_benchmark__v1", {
+                    result_storage.save_json_result("motivating_fio_benchmark__v2", {
                         "subject": subject,
                         "store": store.to_dict(),
                         "system_setup_data": system_setup_data,
