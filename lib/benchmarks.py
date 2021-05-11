@@ -2,6 +2,10 @@ import collections
 from .helpers import product_dict, merge_dicts
 from pathlib import Path
 from schema import Schema, Or
+import lib.sqlite_bench
+import lib.rocksdb_bench
+import lib.sysbench_mariadb
+import lib.redis_benchmark
 import lib.filebench
 import lib.fio
 from contextlib import ExitStack
