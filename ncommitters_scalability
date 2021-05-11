@@ -5,6 +5,7 @@ import lib.pmem
 from lib.resultstorage import ResultStorage
 import lib.storage_stacks
 import lib.benchmarks
+import lib.benchmarks_fio_analyzers
 from pathlib import Path
 
 store = Store()
@@ -32,37 +33,37 @@ def determine_regions_and_setup_namespaces():
 
     for il, pmem_config_snippet in pmem_config_snippet_by_interleaving_level.items():
         pmem_config = {
-        	"regions": [
+            "regions": [
                 # the dimms on socket 0 are potentially interleaved
-        		{
-        		    **pmem_config_snippet,	
-        			"namespaces": [
-        				{
-        					"mode": "devdax",
-        					"size": 10 * (1<<30),
-        					"configlabel": "devdax",
-        				},
-        				{
-        					"mode": "fsdax",
-        					"size": 10 * (1<<30),
-        					"configlabel": "fsdax",
-        				},
-        			]	
-        		},
+                {
+                    **pmem_config_snippet,
+                    "namespaces": [
+                        {
+                            "mode": "devdax",
+                            "size": 40 * (1<<30),
+                            "configlabel": "devdax",
+                        },
+                        {
+                            "mode": "fsdax",
+                            "size": 40 * (1<<30),
+                            "configlabel": "fsdax",
+                        },
+                    ]
+                },
                 # all the dimms on the disabled socket are treated as block devices (the machine has no other nvmes)
                 *[{
-             		"PersistentMemoryType": "AppDirectNotInterleaved",
-        			"SocketID": "0x0001",
-        			"DimmID": dimmid,
-        			"namespaces": [
-        				{
-        					"mode": "fsdax",
-        					"size": 100 * (1<<30),
-        					"configlabel": "blockdevice", #!!!!!!!!!
-        				},
-        			]	
+                     "PersistentMemoryType": "AppDirectNotInterleaved",
+                    "SocketID": "0x0001",
+                    "DimmID": dimmid,
+                    "namespaces": [
+                        {
+                            "mode": "fsdax",
+                            "size": 100 * (1<<30),
+                            "configlabel": "blockdevice", #!!!!!!!!!
+                        },
+                    ]
                 } for dimmid in ["0x1011", "0x1101", "0x1111"]],
-        	]
+            ]
         }
         try:
             print(f"trying pmem config: {pmem_config}")
@@ -86,13 +87,13 @@ resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
 
-for ncommitters in [1,2,3,4,6,8,12,18,24]:
+for ncommitters in [1,2,3,4,8,12,24]:
     storage_stack = lib.storage_stacks.ZFSPmem(store, "zfs", "0", "0", f"{ncommitters}")
     with storage_stack as storage_stack:
         bench = lib.benchmarks.Fio4kSyncRandFsWrite(
             store=store,
             identity="fio-4k-sync-rand-write--size-div-by-numjobs",
-            numjobs_values=list(range(1,25)),
+            numjobs_values=list(range(1,19)),
             size=1<<30,
             size_mode="size-div-by-numjobs",
             dir_is_mountpoint_format_string=True,
@@ -106,7 +107,7 @@ for ncommitters in [1,2,3,4,6,8,12,18,24]:
                 "storage_stack": storage_stack.as_dict(),
                 **rd,
             }
-            result_storage.save_json_result("ncommitters_scalability__v3", rd)
+            result_storage.save_json_result("ncommitters_scalability__v4", rd)
 
         def setup_analyzers(exitstack):
             return {
