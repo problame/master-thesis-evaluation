@@ -35,7 +35,7 @@ class ResultStorage:
                     d = json.load(f)
                 except e:
                     raise Exception(f"cannot process result file {filepath}") from e
-                d["file"] = filepath
+                d["file"] = str(filepath)
                 d['file_ctime'] = filepath.stat().st_ctime
                 yield d
             

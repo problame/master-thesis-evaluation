@@ -78,6 +78,8 @@ def _merge_dicts_tests():
 
 _merge_dicts_tests()
 
+def deep_copy_dict(d):
+    return merge_dicts({}, d)
 
 class AttrDict(dict):
     def __init__(self, *args, **kwargs):

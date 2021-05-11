@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+#
+# shoot-out for various application-level benchmarks for different file system stacks
+#
+# NOTE: the prior version of this benchmark was named fs_comparison_v1 and fs_comparison_v2
+
+from lib.store import Store
+import lib.isolcpus
+import lib.pmem
+from lib.resultstorage import ResultStorage
+import lib.storage_stacks
+import lib.benchmarks
+from pathlib import Path
+import itertools
+import lib.partitioning
+import shutil
+from evaluation_config import system_setup__i30pc61_single_dimm
+
+store = Store()
+
+system_setup_data = system_setup__i30pc61_single_dimm(store)
+
+print(store.to_dict())
+
+resultdir = Path("./results")
+result_storage = ResultStorage(resultdir)
+
+linux_fs_mountpoint = Path("/dut_linux_fs")
+if linux_fs_mountpoint.exists():
+    assert linux_fs_mountpoint.is_dir()
+    assert len(list(linux_fs_mountpoint.iterdir())) == 0
+else:
+    linux_fs_mountpoint.mkdir()
+
+######################### benchmark #######################333
+
+# define the benchmark factories
+variable_values = list(range(1, 9))
+def fio_size_per_job():
+    return lib.benchmarks.Fio4kSyncRandFsWrite(
+        store=store,
+        identity="fio-4k-sync-rand-write--size-per-job",
+        numjobs_values=variable_values,
+        size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
+        size_mode="size-per-job",
+        dir_is_mountpoint_format_string=False,
+    )
+def fio_size_div_by_numjobs():
+    return lib.benchmarks.Fio4kSyncRandFsWrite(
+        store=store,
+        identity="fio-4k-sync-rand-write--size-div-by-numjobs",
+        numjobs_values=variable_values,
+        size=(1<<30),
+        size_mode="size-div-by-numjobs",
+        dir_is_mountpoint_format_string=False,
+    )
+benchmark_factories = [
+    fio_size_per_job,
+    fio_size_div_by_numjobs,
+]
+
+def make_subject(sstack_kind, sstack_cls, *sstack_args):
+    def run(subject):
+        """run each benchmark on a fresh instance of sstack_cls for each benchmark"""
+        for bmf in benchmark_factories:
+            sstack = sstack_cls(*sstack_args)
+            with sstack as sstack:
+
+                def emit_result(rd):
+                    result_storage.save_json_result("motivating_fio_benchmark__v1", {
+                        "subject": subject,
+                        "store": store.to_dict(),
+                        "system_setup_data": system_setup_data,
+                        "storage_stack": sstack.as_dict(), # includes id
+                        "result": rd, # includes bench id
+                    })
+
+                def create_and_run_bench_on_stack():
+                    if sstack_kind == "zfs":
+                        fio_target_override = {
+                            "type": "fs",
+                            "filename_format_str": sstack.dataset_mountpoint_format_string  +  "/fio_jobfile",
+                            "require_filename_format_str_parent_is_mountpoint": True,
+                            "prewrite_mode": "delete",
+                        }
+                    elif sstack_kind == "blockdev":
+                        fio_target_override = {
+                            "type": "blockdev",
+                            "blockdev_path": sstack.blockdev_path,
+                        }
+                    elif sstack_kind == "devdax":
+                        fio_target_override = {
+                            "type": "devdax",
+                            "devdax_path": sstack.devdax_path,
+                        }
+                    else:
+                        raise Exception(f"unknown sstack_kind={sstack_kind!r}")
+
+                    bm = bmf()
+                    bm.run(None, emit_result, fio_target_override=fio_target_override)
+
+                create_and_run_bench_on_stack()
+    return run
+
+subjects = {
+    "zil-lwb": make_subject("zfs", lib.storage_stacks.ZFSLwb, store, "zfs", "0"),
+    "sync-disabled": make_subject("zfs", lib.storage_stacks.ZFSSyncDisabled, store, "zfs", "0"),
+    "fsdax": make_subject("blockdev", lib.storage_stacks.DevPmem, store),
+    "devdax": make_subject("devdax", lib.storage_stacks.DevDax, store),
+    "zil-pmem": make_subject("zfs", lib.storage_stacks.ZFSPmem, store, "zfs", "0", "0", "3"),
+}
+
+for subject, run_fn in subjects.items():
+    print(f"STARTING SUBJECT {subject!r}")
+    run_fn(subject)
+    print(f"FINISHED SUBJECT {subject!r}")
+

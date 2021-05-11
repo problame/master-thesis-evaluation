@@ -159,11 +159,6 @@ def zilpmem_zfsconfig(ncommitters=None, zvol_request_sync=None, itxg_bypass=None
     })
 
 
-def zilpmem_benchmark(emit_result):
-    zfs_setup_config = zilpmem_zfsconfig(ncommitters="8", zvol_request_sync="0", itxg_bypass="0")
-    fio_config = make_fio_zfs_config({"sync": 1})
-    zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
-
 def itxg_bypass_evaluation(emit_result):
     for (ncommitters, zvol_request_sync, itxg_bypass, fsync_every) in itertools.product([1,2,4,6,7,8,9,10,14,18,24], ["1"], ["1"], [1,8,32]):
         zfs_setup_config = zilpmem_zfsconfig(ncommitters=f"{ncommitters}", zvol_request_sync=zvol_request_sync, itxg_bypass=itxg_bypass)
@@ -181,47 +176,6 @@ def itxg_bypass_evaluation(emit_result):
         }
         zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result, run_fio_kwargs=run_fio_kwargs)
 
-
-def zillwb_configs(fio_customizations):
-    zfs_setup_config = make_zfs_setup_config({
-        "module_args": {
-            "zfs": {
-                    "zil_default_kind": "1",
-            }
-        },
-        "vdevs": [
-            "nodax:" + store.get_one('fsdax'),
-        ],
-    })
-    fio_config = make_fio_zfs_config(fio_customizations)
-    return (zfs_setup_config, fio_config)
-
-
-def zillwb_benchmark(emit_result):
-    zfs_setup_config, fio_config = zillwb_configs({ "sync": 1 })
-    zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
-
-def sync0_benchmark(emit_result):
-    zfs_setup_config, fio_config = zillwb_configs({ "sync": 0 })
-    zfs_benchmark_impl(zfs_setup_config, fio_config, emit_result)
-
-def devdax_benchmark(emit_result):
-    run_fio_series(make_fio_config({
-        "sync": 1,
-        "target": {
-            "type": "devdax",
-            "devdax_path": Path(store.get_one('devdax')),
-        }
-    }), emit_result)
-
-def fsdax_benchmark(emit_result):
-    run_fio_series(make_fio_config({
-        "sync": 1,
-        "target": {
-            "type": "blockdev",
-            "blockdev_path": Path(store.get_one('fsdax')),
-        }
-    }), emit_result)
 
 def ncommitters_scalability(emit_result):
     for ncommitters in [1,2,3,4,5,6,7,8,9,10,11,12,14,16,18]:
@@ -276,16 +230,6 @@ print(store.to_dict())
 resultdir = Path("./results")
 result_storage = ResultStorage(resultdir)
 
-## perf benchmarks
-#def perf_save_result(subject, prefix, result_dict):
-#    result_dict = merge_dicts(result_dict, {"test_subject": subject})
-#    result_storage.save_json_result(prefix, result_dict)
-#zilpmem_benchmark(lambda rd: perf_save_result("zil-pmem", "perf", rd))
-#zillwb_benchmark(lambda rd: perf_save_result("zil-lwb", "perf", rd))
-#sync0_benchmark(lambda rd: perf_save_result("async", "perf", rd))
-#devdax_benchmark(lambda rd: perf_save_result("devdax", "perf", rd))
-#fsdax_benchmark(lambda rd: perf_save_result("fsdax", "perf", rd))
-#
 ## itxg bypass
 #itxg_bypass_evaluation(lambda rd: result_storage.save_json_result("itxg_bypass_v6_i60pc62", rd))
 #

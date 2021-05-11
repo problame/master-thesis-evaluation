@@ -179,7 +179,7 @@ class Fio4kSyncRandFsWrite(Benchmark):
             "dir_is_mountpoint_format_string": bool,
         }), kwargs)
 
-    def run(self, dir, emit_result, setup_analyzers=None):
+    def run(self, dir, emit_result, setup_analyzers=None, fio_target_override=None):
 
         for numjobs in self.numjobs_values:
             fio_config = {}
@@ -197,24 +197,38 @@ class Fio4kSyncRandFsWrite(Benchmark):
                 size = self.size
             elif self.size_mode == "size-div-by-numjobs":
                 size = self.size // numjobs
+                # align to 2 MiB because that's what fio's devdax engine requires
+                ## Otherwise it fails with with status code 3
+                ## and dmesg says
+                ## dax_mmap: fail, unaligned vma (0x7ff0ece00000 - 0x7ff102356000, 0x1fffff)
+                ## => linux kernel: drivers/dax/device.c
+                # FIXME: we should get the alignment requirement info from somewhere else
+                assert size >= (1<<22)
+                size = size & (~((1<<22)- 1))
+                assert size > 0
+
             fio_config = merge_dicts(fio_config, {
                 "size": size,
             })
 
-            if self.dir_is_mountpoint_format_string:
-                filename_format_str = dir + "/fio_jobfile"
-                require_mountpoint = True
+            # compute and set 'target' config item
+            if fio_target_override:
+                fio_target = fio_target_override
+                assert dir is None
             else:
-                filename_format_str = str(dir / "fio_jobfile{}")
-                require_mountpoint = False
-            fio_config = merge_dicts(fio_config, {
-                "target": {
+                if self.dir_is_mountpoint_format_string:
+                    filename_format_str = dir + "/fio_jobfile"
+                    require_mountpoint = True
+                else:
+                    filename_format_str = str(dir / "fio_jobfile{}")
+                    require_mountpoint = False
+                fio_target = {
                     "type": "fs",
                     "filename_format_str": filename_format_str,
                     "require_filename_format_str_parent_is_mountpoint": require_mountpoint,
                     "prewrite_mode": "delete",
-                },
-            })
+                }
+            fio_config = merge_dicts(fio_config, { "target": fio_target })
 
             # fio config done, now setup analyzers and start the benchmark
 

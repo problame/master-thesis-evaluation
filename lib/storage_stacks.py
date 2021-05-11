@@ -2,14 +2,20 @@ from pathlib import Path
 import lib.zfssetup
 import lib.devicemapper
 import contextlib
-from .helpers import must_run, poll_wait
+from .helpers import must_run, poll_wait, deep_copy_dict
 import subprocess
+from schema import Schema
 
 class ZFS:
     def __init__(self, store, identity):
         self.store = store
         self.identity = identity
         self.open_setup = None
+        self._filesystem_properties = {
+            "recordsize": "4k",
+            "compression": "off",
+            "sync": "standard",
+        }
 
     def is_dax_bdev(self):
         return False
@@ -26,6 +32,10 @@ class ZFS:
         self.open_setup.__exit__(type, val, bt)
         self.open_setup = None
 
+    def _set_zfs_property(self, **kwargs):
+        kwargs = Schema({"prop": str, "value": str}).validate(kwargs)
+        self._filesystem_properties[kwargs["prop"]] = kwargs["value"]
+
     def _make_config(self):
         return {
             "builddir": Path(self.store.get_one('zil_pmem_builddir')),
@@ -33,10 +43,7 @@ class ZFS:
                 "zfs": self._config__zfs_module_args(),
             },
             "pool_properties": {},
-            "filesystem_properties": {
-                "recordsize": "4k",
-                "compression": "off",
-            },
+            "filesystem_properties": deep_copy_dict(self._filesystem_properties),
             "poolname":"dut",
             "mountpoint": Path("/dut"),
             "vdevs": [
@@ -100,6 +107,14 @@ class ZFSLwb(ZFS):
         # "nodax:" prefix needs to go if we switch this to mainline openzfs
         return "nodax:" + self.store.get_one('fsdax')
 
+class ZFSSyncDisabled(ZFSLwb):
+    def __init__(self, store, identity, zvol_request_sync):
+        super().__init__(store, identity, zvol_request_sync)
+        self._set_zfs_property(prop="sync", value="disabled")
+
+    def cli_name(self):
+        return f"{self.identity}-sync_disabled-rs_{self.zvol_request_sync}"
+
 class ZFSPmem(ZFS):
 
     def __init__(self, store, identity, zvol_request_sync, itxg_bypass, ncommitters):
@@ -154,6 +169,34 @@ class DevPmem:
     def __exit__(self, type, val, bt):
         assert self.dev is not None
         self.dev = None
+
+class DevDax:
+
+    def __init__(self, store):
+        self.dev = None
+        self.store = store
+
+    def __enter__(self):
+        assert self.dev is None
+        self.dev = Path(self.store.get_one("devdax"))
+        assert self.dev.is_char_device()
+        return self
+
+    def __exit__(self, type, val, bt):
+        assert self.dev is not None
+        self.dev = None
+
+    @property
+    def devdax_path(self):
+        return self.dev
+
+    def cli_name(self):
+        return f"devdax"
+
+    def as_dict(self):
+        return {
+            "identity": self.cli_name(),
+        }
 
 class DmWritecache:
 
