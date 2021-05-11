@@ -175,7 +175,7 @@ class Fio4kSyncRandFsWrite(Benchmark):
             "dir_is_mountpoint_format_string": bool,
         }), kwargs)
 
-    def run(self, dir, emit_result, setup_analyzers=None):
+    def run(self, dir, emit_result, setup_analyzers=None, fio_target_override=None):
 
         for numjobs in self.numjobs_values:
             fio_config = {}
@@ -197,20 +197,25 @@ class Fio4kSyncRandFsWrite(Benchmark):
                 "size": size,
             })
 
-            if self.dir_is_mountpoint_format_string:
-                filename_format_str = dir + "/fio_jobfile"
-                require_mountpoint = True
+            # compute and set 'target' config item
+            if fio_target_override:
+                fio_target = fio_target_override
+                assert dir is None
+                del dir # not used
             else:
-                filename_format_str = str(dir / "fio_jobfile{}")
-                require_mountpoint = False
-            fio_config = merge_dicts(fio_config, {
-                "target": {
+                if self.dir_is_mountpoint_format_string:
+                    filename_format_str = dir + "/fio_jobfile"
+                    require_mountpoint = True
+                else:
+                    filename_format_str = str(dir / "fio_jobfile{}")
+                    require_mountpoint = False
+                fio_target = {
                     "type": "fs",
                     "filename_format_str": filename_format_str,
                     "require_filename_format_str_parent_is_mountpoint": require_mountpoint,
                     "prewrite_mode": "delete",
-                },
-            })
+                }
+            fio_config = merge_dicts(fio_config, { "target": fio_target })
 
             # fio config done, now setup analyzers and start the benchmark
 
