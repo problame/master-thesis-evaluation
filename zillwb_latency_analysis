@@ -22,13 +22,12 @@ result_storage = ResultStorage(resultdir)
 
 storage_stack = lib.storage_stacks.ZFSLwb(store, "zfs", "0")
 with storage_stack as storage_stack:
-
     bench = lib.benchmarks.Fio4kSyncRandFsWrite(
         store=store,
-        identity="fio-4k-sync-rand-write--size-div-by-numjobs",
-        numjobs_values=list(range(1,17)),
-        size=1<<30,
-        size_mode="size-div-by-numjobs",
+        identity="fio-4k-sync-rand-write--size-per-job",
+        numjobs_values=list(range(1, 9)),
+        size=100*(1<<20),
+        size_mode="size-per-job",
         dir_is_mountpoint_format_string=True,
     )
 
