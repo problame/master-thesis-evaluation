@@ -177,6 +177,7 @@ class Fio4kSyncRandFsWrite(Benchmark):
             "size": int,
             "size_mode": Or("size-per-job", "size-div-by-numjobs"),
             "dir_is_mountpoint_format_string": bool,
+            "runtime_seconds": int,
         }), kwargs)
 
     def run(self, dir, emit_result, setup_analyzers=None, fio_target_override=None):
@@ -186,7 +187,7 @@ class Fio4kSyncRandFsWrite(Benchmark):
             fio_config = merge_dicts(fio_config, {
 			    "fio_binary": Path(self.store.get_one('fio_binary')),
                 "blocksize": 1<<12, # keep in sync with zfs recordsize prop!
-                "runtime_seconds": 10,
+                "runtime_seconds": self.runtime_seconds,
                 "ramp_seconds": 2,
                 "fsync_every": 0,
                 "numjobs": numjobs,
