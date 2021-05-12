@@ -30,7 +30,7 @@ for storage_stack in stacks:
     with storage_stack as storage_stack:
 
         def emit_result(rd):
-            result_storage.save_json_result("comparison_zil_overhead_lwb_vs_pmem__v1", {
+            result_storage.save_json_result("comparison_zil_overhead_lwb_vs_pmem__v2", {
                 "store": store.to_dict(),
                 "system_setup_data": system_setup_data,
                 "storage_stack": storage_stack.as_dict(),
@@ -54,6 +54,7 @@ for storage_stack in stacks:
             size=100*(1<<20),
             size_mode="size-per-job",
             dir_is_mountpoint_format_string=True,
+            runtime_seconds=60,
         )
 
         bench.run(storage_stack.dataset_mountpoint_format_string, emit_result, setup_analyzers=setup_analyzers)
