@@ -44,6 +44,7 @@ def fio_size_per_job():
         size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
         size_mode="size-per-job",
         dir_is_mountpoint_format_string=False,
+        runtime_seconds=60,
     )
 benchmark_factories = [
     fio_size_per_job,
@@ -57,7 +58,7 @@ def make_subject(sstack_kind, sstack_cls, *sstack_args):
             with sstack as sstack:
 
                 def emit_result(rd):
-                    result_storage.save_json_result("motivating_fio_benchmark__v2", {
+                    result_storage.save_json_result("motivating_fio_benchmark__v3", {
                         "subject": subject,
                         "store": store.to_dict(),
                         "system_setup_data": system_setup_data,
