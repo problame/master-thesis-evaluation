@@ -1,23 +1,11 @@
-struct prb_write_stats {
-	uint64_t get_committer_slot_nanos;
-	uint64_t put_committer_slot_nanos;
-	uint64_t dt_sl_aquisition_nanos;
-	uint64_t dt_sl_held_nanos;
-	uint64_t pmem_nanos;
+#define KERNEL
+#define CC_USING_FENTRY
 
-	size_t get_chunk_calls;
-	size_t get_chunk_calls_sleeps;
-	size_t obsolete;
-	size_t beginning_new_gen;
-	size_t committer_slot;
-
-	void *entry_chunk;
-	uint8_t *entry_pmem_base;
-};
+#include <sys/zio.h>
+#include <sys/zil_lwb.h>
 
 BEGIN{
     @zfs_write = sum(0);
-    //@zfs_write_count = count(0);
     @zil_fill_commit_list = sum(0);
     @zil_commit = sum(0);
     @zfs_log_write = sum(0);
@@ -25,33 +13,19 @@ BEGIN{
 }
 
 kprobe:zfs_write                                 { @start__zfs_write[tid] = nsecs; }
-kretprobe:zfs_write/@start__zfs_write[tid] != 0/ { @zfs_write = sum(nsecs - @start__zfs_write[tid]); @zfs_write_count = count(); delete(@start__zfs_write[tid]); }
+kretprobe:zfs_write /@start__zfs_write[tid] != 0/ { @zfs_write = sum(nsecs - @start__zfs_write[tid]); @zfs_write_count = count(); delete(@start__zfs_write[tid]); }
 
-kprobe:zil_commit/@start__zfs_write[tid] != 0/                                 { @start__zil_commit[tid] = nsecs; }
-kretprobe:zil_commit/@start__zil_commit[tid] != 0/ { @zil_commit = sum(nsecs - @start__zil_commit[tid]); delete(@start__zil_commit[tid]); }
+kprobe:zil_commit /@start__zfs_write[tid] != 0/                                 { @start__zil_commit[tid] = nsecs; }
+kretprobe:zil_commit /@start__zil_commit[tid] != 0/ { @zil_commit = sum(nsecs - @start__zil_commit[tid]); delete(@start__zil_commit[tid]); }
 
-kprobe:zfs_log_write_begin/@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_begin[tid] = nsecs; }
-kretprobe:zfs_log_write_begin/@start__zfs_log_write_begin[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_begin[tid]); delete(@start__zfs_log_write_begin[tid]); }
+kprobe:zfs_log_write_begin /@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_begin[tid] = nsecs; }
+kretprobe:zfs_log_write_begin /@start__zfs_log_write_begin[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_begin[tid]); delete(@start__zfs_log_write_begin[tid]); }
 
-kprobe:zfs_log_write_finish/@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_finish[tid] = nsecs; }
-kretprobe:zfs_log_write_finish/@start__zfs_log_write_finish[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_finish[tid]); delete(@start__zfs_log_write_finish[tid]); }
+kprobe:zfs_log_write_finish /@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_finish[tid] = nsecs; }
+kretprobe:zfs_log_write_finish /@start__zfs_log_write_finish[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_finish[tid]); delete(@start__zfs_log_write_finish[tid]); }
 
 kprobe:zil_fill_commit_list                                  { @start__zil_fill_commit_list[tid] = nsecs; }
-kretprobe:zil_fill_commit_list/@start__zil_fill_commit_list[tid] != 0/ { @zil_fill_commit_list = sum(nsecs - @start__zil_fill_commit_list[tid]); delete(@start__zil_fill_commit_list[tid]); }
-
-kprobe:pmem_submit_bio                                  { @start__pmem_submit_bio[tid] = nsecs; }
-kretprobe:pmem_submit_bio/@start__pmem_submit_bio[tid] != 0/ { @pmem_write_time = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
-
-kprobe:trace_zfs_zil_pmem_prb_write_entry__done 	// !HAVE_DECLARE_EVENT_CLASS
-// tracepoint:zfs:zfs_zil_pmem_prb_write_entry__done // HAVE_DECLARE_EVENT_CLASS
-{
-        // !HAVE_DECLARE_EVENT_CLASS
-	    $s = (struct prb_write_stats *)arg1;
-        @pmem_write_time = sum($s->pmem_nanos);
-
-        // HAV_DECLARE_EVENT_CLASS
-        // @pmem_write_time = sum(args->pmem_nanos);
-}
+kretprobe:zil_fill_commit_list /@start__zil_fill_commit_list[tid] != 0/ { @zil_fill_commit_list = sum(nsecs - @start__zil_fill_commit_list[tid]); delete(@start__zil_fill_commit_list[tid]); }
 
 interval:ms:500
 {
@@ -61,7 +35,6 @@ interval:ms:500
     print(@zil_fill_commit_list);
     print(@zil_commit);
     print(@zfs_log_write);
-    print(@pmem_write_time);
     printf("update_end");
 }
 

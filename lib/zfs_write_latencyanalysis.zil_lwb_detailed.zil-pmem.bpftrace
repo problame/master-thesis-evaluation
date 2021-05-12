@@ -1,26 +1,21 @@
+#define KERNEL
+#define CC_USING_FENTRY
 
-kprobe:zfs_write                                 { @start__zfs_write[tid] = nsecs; }
-kretprobe:zfs_write/@start__zfs_write[tid] != 0/ { @zfs_write = sum(nsecs - @start__zfs_write[tid]); @zfs_write_count = count(); delete(@start__zfs_write[tid]); }
+#include <sys/zio.h>
+#include <sys/zil_lwb.h>
 
-kprobe:zil_commit/@start__zfs_write[tid] != 0/                                 { @start__zil_commit[tid] = nsecs; }
-kretprobe:zil_commit/@start__zil_commit[tid] != 0/ { @zil_commit = sum(nsecs - @start__zil_commit[tid]); delete(@start__zil_commit[tid]); }
+kprobe:zfs_write{ @start__zfs_write[tid] = nsecs; }
+kretprobe:zfs_write /@start__zfs_write[tid] != 0/ { @zfs_write = sum(nsecs - @start__zfs_write[tid]); @zfs_write_count = count(); delete(@start__zfs_write[tid]); }
 
-kprobe:zfs_log_write_begin/@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_begin[tid] = nsecs; }
-kretprobe:zfs_log_write_begin/@start__zfs_log_write_begin[tid] != 0/ { @zfs_log_write_begin = sum(nsecs - @start__zfs_log_write_begin[tid]); delete(@start__zfs_log_write_begin[tid]); }
+kprobe:zil_commit /@start__zfs_write[tid] != 0/                                 { @start__zil_commit[tid] = nsecs; }
+kretprobe:zil_commit /@start__zil_commit[tid] != 0/ { @zil_commit = sum(nsecs - @start__zil_commit[tid]); delete(@start__zil_commit[tid]); }
 
-kprobe:zfs_log_write_finish/@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_finish[tid] = nsecs; }
-kretprobe:zfs_log_write_finish/@start__zfs_log_write_finish[tid] != 0/ { @zfs_log_write_finish = sum(nsecs - @start__zfs_log_write_finish[tid]); delete(@start__zfs_log_write_finish[tid]); }
+kprobe:zfs_log_write_begin /@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_begin[tid] = nsecs; }
+kretprobe:zfs_log_write_begin /@start__zfs_log_write_begin[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_begin[tid]); delete(@start__zfs_log_write_begin[tid]); }
 
-//track time spent spent in zil_commit_waiter timeout (cv_timedwait_hires) and waiting for issue to finish (cv_wait)
-//kprobe:zillwb_commit_waiter
-//{
-//    @start__zillwb_commit_waiter[tid] = nsecs;
-//}
-//kretprobe:zillwb_commit_waiter
-///@start__zillwb_commit_waiter[tid] != 0/
-//{
-//    delete(@start__zillwb_commit_waiter[tid]);
-//}
+kprobe:zfs_log_write_finish /@start__zfs_write[tid] != 0/                                 { @start__zfs_log_write_finish[tid] = nsecs; }
+kretprobe:zfs_log_write_finish /@start__zfs_log_write_finish[tid] != 0/ { @zfs_log_write = sum(nsecs - @start__zfs_log_write_finish[tid]); delete(@start__zfs_log_write_finish[tid]); }
+
 kprobe:cv_timedwait_hires
 /@start__zil_commit[tid] != 0/
 {
@@ -29,30 +24,53 @@ kprobe:cv_timedwait_hires
 kretprobe:cv_timedwait_hires
 /@start__zil_commit__cv_timedwait_hires[tid] != 0/
 {
-    @zillwb_commit_waiter__timeout = sum(nsecs - @start__zil_commit__cv_timedwait_hires[tid]);
+    @zillwb_commit_waiter__timeout_cv = sum(nsecs - @start__zil_commit__cv_timedwait_hires[tid]);
     delete(@start__zil_commit__cv_timedwait_hires[tid]);
 }
 kprobe:__cv_wait
 /@start__zil_commit[tid] != 0/
 {
     @start__zil_commit__cv_wait[tid] = nsecs;
+    @start__zil_commit__cv_wait__stacks[kstack] = count();
 }
 kretprobe:__cv_wait
 /@start__zil_commit__cv_wait[tid] != 0/
 {
-    @zillwb_commit_waiter__issue = sum(nsecs - @start__zil_commit__cv_wait[tid]);
+    @zillwb_commit_waiter__issue_cv = sum(nsecs - @start__zil_commit__cv_wait[tid]);
+    @zillwb_commit_waiter__issue_cv__stacks[kstack] = count();
     delete(@start__zil_commit__cv_wait[tid]);
 }
 
-
-// track zio_rewrite()'s issued from zillwb_lwb_write_open
-//kprobe:zillwb_lwb_write_open { @start__zillwb_lwb_write_open[tid] = nsecs; }
-//kretprobe:zillwb_lwb_write_open /@start__zillwb_lwb_write_open[tid] != 0/ { delete(@start__zillwb_lwb_write_open[tid]); }
-//kprobe:zio_rewrite /@start__zillwb_lwb_write_open[tid] != 0/ {    @zio_starttimes[arg0] = nsecs; }
-//kprobe:zillwb_lwb_flush_vdevs_done /@zio_starttimes[arg0] != 0/ { @zio_rewrite = sum(nsecs - @zio_starttimes[arg0]); delete(@zio_starttimes[arg0]); }
+kprobe:zil_fill_commit_list                                  { @start__zil_fill_commit_list[tid] = nsecs; }
+kretprobe:zil_fill_commit_list /@start__zil_fill_commit_list[tid] != 0/ { @zil_fill_commit_list = sum(nsecs - @start__zil_fill_commit_list[tid]); delete(@start__zil_fill_commit_list[tid]); }
 
 kprobe:pmem_submit_bio                                  { @start__pmem_submit_bio[tid] = nsecs; }
-kretprobe:pmem_submit_bio/@start__pmem_submit_bio[tid] != 0/ { @pmem_submit_bio = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
+kretprobe:pmem_submit_bio /@start__pmem_submit_bio[tid] != 0/ { @pmem_submit_bio = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
+
+kprobe:zillwb_lwb_write_issue                                  { @start__zillwb_lwb_write_issue[tid] = nsecs; }
+kretprobe:zillwb_lwb_write_issue /@start__zillwb_lwb_write_issue[tid] != 0/ { @zillwb_lwb_write_issue = sum(nsecs - @start__zillwb_lwb_write_issue[tid]); delete(@start__zillwb_lwb_write_issue[tid]); }
+
+
+
+kprobe:zillwb_lwb_flush_vdevs_done {
+    $zio = (struct zio*)arg0;
+    $lwb = (struct lwb*)$zio->io_private;
+    $zilog = (struct zilog_lwb*)$lwb->lwb_zilog;
+    @start__zillwb_lwb_flush_vdevs_done[tid] = $zilog;
+}
+kprobe:__cv_broadcast
+/@start__zillwb_lwb_flush_vdevs_done[tid] != 0/
+{
+    $zilog = (struct zilog_lwb*)@start__zillwb_lwb_flush_vdevs_done[tid];
+    $last_lwb_latency = $zilog->zl_last_lwb_latency;
+    @last_lwb_latency = avg($last_lwb_latency);
+    delete(@start__zillwb_lwb_flush_vdevs_done[tid]);
+}
+
+kprobe:zillwb_lwb_write_issue
+{
+    @lwb_issue_count = count();
+}
 
 interval:ms:500
 {
@@ -60,11 +78,13 @@ interval:ms:500
     print(@zfs_write);
     print(@zfs_write_count);
     print(@zil_commit);
-    print(@zfs_log_write_begin);
-    print(@zfs_log_write_finish);
-    //print(@zio_rewrite);
-    print(@zillwb_commit_waiter__issue);
-    print(@zillwb_commit_waiter__timeout);
+    print(@zfs_log_write);
+    print(@zil_fill_commit_list);
+    print(@zillwb_commit_waiter__issue_cv);
+    print(@zillwb_commit_waiter__timeout_cv);
+    print(@zillwb_lwb_write_issue);
+    print(@last_lwb_latency);
+    print(@lwb_issue_count);
     print(@pmem_submit_bio);
     printf("update_end");
 }

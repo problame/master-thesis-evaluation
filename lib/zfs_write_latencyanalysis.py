@@ -45,9 +45,17 @@ class Bpftrace:
         self.stopped_measuring_at = None
 
     def setup(self):
+        builddir=Path("/root/zil-pmem/zil-pmem")
         args = [
             #"unbuffer", # https://stackoverflow.com/a/54010626/305410
             "bpftrace", "-f", "json",
+             "-I", "/lib/modules/5.9.0-0.bpo.5-amd64/source/include", # FIXME
+             "--include", builddir / "zfs_config.h",
+             "-I",  builddir / Path("include/spl"),
+             "-I", builddir / Path("include"),
+             "-I", builddir / Path("include/os/linux/spl"),
+             "-I", builddir / Path("include/os/linux/zfs"),
+             "-I", builddir / Path("include/os/linux/kernel"),
             self.script
         ]
         print(f"running bpftrace command: {args}")
@@ -148,7 +156,7 @@ class Bpftrace:
                         curkeys = set(current.keys())
                         if curkeys != self.update_map_values:
                             missing = self.update_map_values - curkeys
-                            print(f"discarding incomplete update, missing keys: {missing}")
+                            print(f"discarding incomplete update, missing keys: {missing!r}")
                         else:
                             if self.last_update:
                                 self.last_update.update(current)
@@ -156,7 +164,7 @@ class Bpftrace:
                                 self.last_update = Update(current)
                             self.update_cv.notify_all()
 
-                elif ev["type"] == "map":
+                elif ev["type"] in [ "map", "stats" ]:
                     for k, v in ev["data"].items():
                         assert not k in current # bpftrace script behaves incorrectly
                         current[k] = v
@@ -165,22 +173,19 @@ class Bpftrace:
 
         print("read_output() returning")
 
-class BpftraceZilLwbLatencyBreakdownInUpstreamTree(Bpftrace):
-    script = Path(__file__).parent / "zfs_write_latencyanalysis.zil_lwb_detailed.upstream.bpftrace"
-    def __init__(self):
-        raise NotImplementedError
-    pass
-
 class BpftraceZilLwbLatencyBreakdownInZilPmemTree(Bpftrace):
     script = Path(__file__).parent / "zfs_write_latencyanalysis.zil_lwb_detailed.zil-pmem.bpftrace"
     update_map_values = {
         "@zfs_write",
         "@zfs_write_count",
         "@zil_commit",
-        "@zfs_log_write_begin",
-        "@zfs_log_write_finish",
-        "@zillwb_commit_waiter__issue",
-        "@zillwb_commit_waiter__timeout",
+        "@zfs_log_write",
+        "@zil_fill_commit_list",
+        "@zillwb_commit_waiter__issue_cv",
+        "@zillwb_commit_waiter__timeout_cv",
+        "@zillwb_lwb_write_issue",
+        "@last_lwb_latency",
+        "@lwb_issue_count",
         "@pmem_submit_bio",
     }
 
@@ -192,5 +197,4 @@ class BpftraceComparisonZilLwbZilPmemInZilPmemTree(Bpftrace):
         "@zil_fill_commit_list",
         "@zil_commit",
         "@zfs_log_write",
-        "@pmem_write_time",
     }
