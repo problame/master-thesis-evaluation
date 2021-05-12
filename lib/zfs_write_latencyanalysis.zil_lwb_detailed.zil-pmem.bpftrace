@@ -44,33 +44,9 @@ kretprobe:__cv_wait
 kprobe:zil_fill_commit_list                                  { @start__zil_fill_commit_list[tid] = nsecs; }
 kretprobe:zil_fill_commit_list /@start__zil_fill_commit_list[tid] != 0/ { @zil_fill_commit_list = sum(nsecs - @start__zil_fill_commit_list[tid]); delete(@start__zil_fill_commit_list[tid]); }
 
-kprobe:pmem_submit_bio                                  { @start__pmem_submit_bio[tid] = nsecs; }
-kretprobe:pmem_submit_bio /@start__pmem_submit_bio[tid] != 0/ { @pmem_submit_bio = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
-
 kprobe:zillwb_lwb_write_issue                                  { @start__zillwb_lwb_write_issue[tid] = nsecs; }
 kretprobe:zillwb_lwb_write_issue /@start__zillwb_lwb_write_issue[tid] != 0/ { @zillwb_lwb_write_issue = sum(nsecs - @start__zillwb_lwb_write_issue[tid]); delete(@start__zillwb_lwb_write_issue[tid]); }
 
-
-
-kprobe:zillwb_lwb_flush_vdevs_done {
-    $zio = (struct zio*)arg0;
-    $lwb = (struct lwb*)$zio->io_private;
-    $zilog = (struct zilog_lwb*)$lwb->lwb_zilog;
-    @start__zillwb_lwb_flush_vdevs_done[tid] = $zilog;
-}
-kprobe:__cv_broadcast
-/@start__zillwb_lwb_flush_vdevs_done[tid] != 0/
-{
-    $zilog = (struct zilog_lwb*)@start__zillwb_lwb_flush_vdevs_done[tid];
-    $last_lwb_latency = $zilog->zl_last_lwb_latency;
-    @last_lwb_latency = avg($last_lwb_latency);
-    delete(@start__zillwb_lwb_flush_vdevs_done[tid]);
-}
-
-kprobe:zillwb_lwb_write_issue
-{
-    @lwb_issue_count = count();
-}
 
 interval:ms:500
 {
@@ -83,8 +59,5 @@ interval:ms:500
     print(@zillwb_commit_waiter__issue_cv);
     print(@zillwb_commit_waiter__timeout_cv);
     print(@zillwb_lwb_write_issue);
-    print(@last_lwb_latency);
-    print(@lwb_issue_count);
-    print(@pmem_submit_bio);
     printf("update_end");
 }

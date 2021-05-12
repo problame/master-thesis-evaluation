@@ -1,0 +1,41 @@
+#define KERNEL
+#define CC_USING_FENTRY
+
+#include <sys/zio.h>
+#include <sys/zil_lwb.h>
+
+kprobe:zfs_write{ @start__zfs_write[tid] = nsecs; }
+kretprobe:zfs_write /@start__zfs_write[tid] != 0/ { @zfs_write_count = count(); delete(@start__zfs_write[tid]); }
+
+kprobe:pmem_submit_bio                                  { @start__pmem_submit_bio[tid] = nsecs; }
+kretprobe:pmem_submit_bio /@start__pmem_submit_bio[tid] != 0/ { @pmem_submit_bio = sum(nsecs - @start__pmem_submit_bio[tid]); delete(@start__pmem_submit_bio[tid]); }
+
+kprobe:zillwb_lwb_flush_vdevs_done {
+    $zio = (struct zio*)arg0;
+    $lwb = (struct lwb*)$zio->io_private;
+    $zilog = (struct zilog_lwb*)$lwb->lwb_zilog;
+    @start__zillwb_lwb_flush_vdevs_done[tid] = $zilog;
+}
+kprobe:__cv_broadcast
+/@start__zillwb_lwb_flush_vdevs_done[tid] != 0/
+{
+    $zilog = (struct zilog_lwb*)@start__zillwb_lwb_flush_vdevs_done[tid];
+    $last_lwb_latency = $zilog->zl_last_lwb_latency;
+    @last_lwb_latency = avg($last_lwb_latency);
+    delete(@start__zillwb_lwb_flush_vdevs_done[tid]);
+}
+
+kprobe:zillwb_lwb_write_issue
+{
+    @lwb_issue_count = count();
+}
+
+interval:ms:500
+{
+    printf("update_begin");
+    print(@zfs_write_count);
+    print(@last_lwb_latency);
+    print(@lwb_issue_count);
+    print(@pmem_submit_bio);
+    printf("update_end");
+}

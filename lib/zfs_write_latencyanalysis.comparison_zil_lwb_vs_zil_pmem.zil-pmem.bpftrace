@@ -9,7 +9,6 @@ BEGIN{
     @zil_fill_commit_list = sum(0);
     @zil_commit = sum(0);
     @zfs_log_write = sum(0);
-    @pmem_write_time = sum(0);
 }
 
 kprobe:zfs_write                                 { @start__zfs_write[tid] = nsecs; }

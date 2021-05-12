@@ -33,7 +33,7 @@ with storage_stack as storage_stack:
     )
 
     def emit_result(rd):
-        result_storage.save_json_result("zillwb_latency_analysis__v3", {
+        result_storage.save_json_result("zillwb_latency_analysis__v4", {
             "store": store.to_dict(),
             "system_setup_data": system_setup_data,
             "storage_stack": storage_stack.as_dict(),

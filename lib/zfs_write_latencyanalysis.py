@@ -31,7 +31,7 @@ class Update:
         self._check_keys_match(o.d)
         ret = {}
         for k in self.d.keys():
-            ret[k] = self.d[k] = o.d[k]
+            ret[k] = self.d[k] - o.d[k]
         return Update(ret)
 
 class Bpftrace:
@@ -184,6 +184,13 @@ class BpftraceZilLwbLatencyBreakdownInZilPmemTree(Bpftrace):
         "@zillwb_commit_waiter__issue_cv",
         "@zillwb_commit_waiter__timeout_cv",
         "@zillwb_lwb_write_issue",
+    }
+
+
+class BpftraceZilLwbLwbWriteLatencyInZilPmemTree(Bpftrace):
+    script = Path(__file__).parent / "zfs_write_latencyanalysis.zil_lwb_lwb_write_latency.zil-pmem.bpftrace"
+    update_map_values = {
+        "@zfs_write_count",
         "@last_lwb_latency",
         "@lwb_issue_count",
         "@pmem_submit_bio",
@@ -198,3 +205,4 @@ class BpftraceComparisonZilLwbZilPmemInZilPmemTree(Bpftrace):
         "@zil_commit",
         "@zfs_log_write",
     }
+
