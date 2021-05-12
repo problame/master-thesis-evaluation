@@ -101,6 +101,7 @@ benchmarks = [
         size=100*(1<<20), # data volume is numjobs * size ==> keep low so that ARC / device bandwidth won't become the constraint
         size_mode="size-per-job",
         dir_is_mountpoint_format_string=False,
+        runtime_seconds=60,
     ),
 
     # fio benchmark
@@ -111,6 +112,7 @@ benchmarks = [
         size=(1<<30),
         size_mode="size-div-by-numjobs",
         dir_is_mountpoint_format_string=False,
+        runtime_seconds=60,
     ),
 
 ]
