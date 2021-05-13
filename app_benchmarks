@@ -32,9 +32,10 @@ def make_zfs_stacks(identity):
     """all ZFS stacks have recordsize / volblocksize set to 4k"""
     s = lib.storage_stacks
     return [
+        s.ZFSSyncDisabled(store, identity, "0"),
         s.ZFSLwb(store, identity, "0"),
         s.ZFSLwb(store, identity, "1"),
-        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["3", "4"])],
+        *[s.ZFSPmem(store, identity, zvrs, byp, ncom) for zvrs, byp, ncom in itertools.product(["0", "1"], ["0","1"], ["3"])],
     ]
 
 def make_blockdev_stacks():
