@@ -97,6 +97,7 @@ for ncommitters in [1,2,3,4,8,12,24]:
             size=1<<30,
             size_mode="size-div-by-numjobs",
             dir_is_mountpoint_format_string=True,
+            runtime_seconds=60,
         )
 
         def emit_result(rd):
@@ -107,7 +108,7 @@ for ncommitters in [1,2,3,4,8,12,24]:
                 "storage_stack": storage_stack.as_dict(),
                 **rd,
             }
-            result_storage.save_json_result("ncommitters_scalability__v4", rd)
+            result_storage.save_json_result("ncommitters_scalability__v5", rd)
 
         def setup_analyzers(exitstack):
             return {
