@@ -43,7 +43,10 @@ def make_blockdev_stacks():
     return  [
             *make_zfs_stacks("zvol"),
             s.DevPmem(store),
-            s.DmWritecache(store), # TODO may want a variant with dm-verity and/or dm-raid as origin?
+            s.DmWritecache(
+                lib.storage_stacks.DevPmem(store),
+                lib.storage_stacks.DmStripe([lib.storage_stacks.DevBlockdev(Path(bd)) for bd in store.get_all("blockdevice")]),
+            ), # TODO may want to add dm-verity etc? :D
     ]
 
 # setup all fs_stacks
@@ -130,7 +133,7 @@ for fs_stack in fs_stacks:
             bench_dir.mkdir()
 
             def emit_result(rd):
-                result_storage.save_json_result("app_benchmarks__v3", {
+                result_storage.save_json_result("app_benchmarks__v4", {
                     "store": store.to_dict(),
                     "system_setup_data": system_setup_data,
                     "storage_stack": fs_stack.as_dict(), # includes id

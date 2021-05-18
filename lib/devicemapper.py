@@ -40,14 +40,12 @@ class TableEntry:
         return " ".join([f"{self.config.start_sector}", f"{self.config.num_sectors}", *self.config.constructor])
 
 
-class Target:
+class AbstractTarget:
     def __init__(self, **kwargs):
         kwargs = AttrDict(Schema({
               "name": str,
-              "table": Table,
           }).validate(kwargs))
         self.name = kwargs.name
-        self.table = kwargs.table
 
     def _path(self):
         return Path("/dev/mapper") / self.name
@@ -77,12 +75,12 @@ class Target:
         except subprocess.CalledProcessError as e:
             raise Exception("cannot create target, consider checking dmesg") from e
 
-        poll_wait(0.1, self._path().exists, "blockdev to appear")
+        poll_wait(0.1, self._path().exists, f"blockdev {self._path()} to appear")
 
     def teardown(self):
         cmd = ["dmsetup", "remove", "--retry", self.name]
         must_run(cmd)
-        poll_wait(0.1, lambda: not self._path().exists(), "blockdev to disappear")
+        poll_wait(0.1, lambda: not self._path().exists(), f"blockdev {self._path()} to disappear")
 
     def __enter__(self):
         self.setup()
@@ -100,9 +98,18 @@ def simple_linear_table(config):
     }).validate(config))
     return RawTable(f"0 {size_to_sectors(config.size)} linear {config.device} 0")
 
-# https://www.kernel.org/doc/html/latest/admin-guide/device-mapper/writecache.html
 
-class WritecachePmem(Target):
+class Target(AbstractTarget):
+    def __init__(self, **kwargs):
+        kwargs = AttrDict(Schema({
+            "name": str,
+            "table": Table,
+        }).validate(kwargs))
+        self.table = kwargs.table
+        super().__init__(name=kwargs.name)
+
+# https://www.kernel.org/doc/html/latest/admin-guide/device-mapper/writecache.html
+class WritecachePmem(AbstractTarget):
     def __init__(self, config):
         config = AttrDict(Schema({
             "name": str,
@@ -117,14 +124,45 @@ class WritecachePmem(Target):
             }
         }).validate(config))
 
+        assert "nvme0" not in str(config.origin_device)
+        assert "nvme0" not in str(config.cache_device)
+
         num_options = 2*len(config.options) # we don't support fua / nofua which are the only options that take no arguments
         options = " ".join([f"{k} {v}" for k, v in config.options.items()])
 
-        table = RawTable(f"0 {size_to_sectors(config.size)} writecache p {config.origin_device} {config.cache_device} {config.blocksize} {num_options} {options}")
+        self.table = RawTable(f"0 {size_to_sectors(config.size)} writecache p {config.origin_device} {config.cache_device} {config.blocksize} {num_options} {options}")
 
-        super().__init__(name=config.name, table=table)
+        super().__init__(name=config.name)
         self.__prezero = [config.origin_device, config.cache_device]
 
     def _setup_pre_create(self):
         for d in self.__prezero:
             zero_out_first_sector(d)
+
+class Stripe(AbstractTarget):
+    def __init__(self, config):
+        config = AttrDict(Schema({
+            "name": str,
+            "blockdevs": [And(Path, Path.is_block_device)],
+        }).validate(config))
+
+        self.blockdevs = config.blockdevs
+        for bd in self.blockdevs:
+            "nvme0" not in str(bd) # safety
+        super().__init__(name=config.name)
+
+    def _setup_pre_create(self):
+
+        script = Path(__file__).parent / "devicemapper.dm_stripe.pl"
+        try:
+            st = subprocess.run([
+                script,
+                self.name,
+                f"{128*2}", # The default from the script in the kernel docs
+                *self.blockdevs,
+                ], text=True, capture_output=True, check=True)
+            self.table = RawTable(st.stdout)
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"unable to compute dm_stripe table using the perl script from the kernel docs\nstdout:{e.stdout}\nstderr: {e.stderr}") from e
+
+

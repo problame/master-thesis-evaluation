@@ -137,6 +137,40 @@ class ZFSPmem(ZFS):
     def _config__log_vdev(self):
         return "dax:" + self.store.get_one('fsdax')
 
+class DevBlockdev:
+
+    def __init__(self, path):
+        assert "nvme0" not in str(path)
+        self.path = path
+        self.open = False
+
+    def cli_name(self):
+        return f"{self.path}"
+
+    def as_dict(self):
+        return {
+            "identity": self.cli_name(),
+        }
+
+    @property
+    def blockdev_path(self):
+        if self.open:
+            return self.path
+        return None
+
+    def is_dax_bdev(self):
+        return False
+
+    def __enter__(self):
+        assert self.path.is_block_device()
+        assert self.open is False
+        self.open = True
+        return self
+
+    def __exit__(self, type, val, bt):
+        assert self.open
+        self.open = False
+
 class DevPmem:
 
     def __init__(self, store):
@@ -198,12 +232,61 @@ class DevDax:
             "identity": self.cli_name(),
         }
 
+class DmStripe:
+
+    def __init__(self, blockdevs):
+        self.blockdevs = blockdevs
+        self.stack = None
+        self.dm_stripe = None
+
+    def cli_name(self):
+        return f"dm-stripe({len(self.blockdevs)})"
+
+    def as_dict(self):
+        return {
+                "identity": self.cli_name(),
+                "blockdevs": list(map(lambda bd: bd.as_dict(), self.blockdevs)),
+        }
+
+    @property
+    def blockdev_path(self):
+        return self.dm_stripe.path
+
+    def is_dax_bdev(self):
+        return False
+
+    def __enter__(self):
+        assert self.stack is None
+        assert self.dm_stripe is None
+        stack = contextlib.ExitStack()
+
+        with stack:
+
+            bds_opened = []
+            for bds in self.blockdevs:
+                bds_opened += [stack.enter_context(bds)]
+
+            self.dm_stripe = stack.enter_context(lib.devicemapper.Stripe({
+                "name": "bench_stripe",
+                "blockdevs": list(map(lambda bd: bd.blockdev_path, bds_opened)),
+            }))
+
+            self.stack = stack.pop_all()
+
+            return self
+
+    def __exit__(self, type, val, bt):
+        self.stack.close()
+        self.stack = None
+        self.dm_stripe = None
+
 class DmWritecache:
 
-    def __init__(self, store):
+    def __init__(self, pmem, origin):
         self.stack = None
         self.dm_wc = None
-        self.store = store
+        self.pmem = pmem
+        self.origin = origin
 
     def cli_name(self):
         return f"dm-writecache"
@@ -211,6 +294,8 @@ class DmWritecache:
     def as_dict(self):
         return {
             "identity": self.cli_name(),
+            "origin": self.origin.as_dict(),
+            "pmem": self.pmem.as_dict(),
         }
 
     @property
@@ -225,27 +310,37 @@ class DmWritecache:
     def __enter__(self):
         assert self.stack is None
         assert self.dm_wc is None
-        self.stack = contextlib.ExitStack()
-        dm_pmem = self.stack.enter_context(lib.devicemapper.Target(name="pmem", table=lib.devicemapper.simple_linear_table({
-            "size": 10*(1<<30),
-            "device": Path(self.store.get_one("fsdax"))})))
-        self.dm_wc = self.stack.enter_context(lib.devicemapper.WritecachePmem({
-                "name": "wc",
-                "size": 40*(1<<30),
-                "blocksize": 4096,
-                "origin_device": Path(self.store.get_first("blockdevice")),
-                "cache_device": dm_pmem.path,
-                # always do writeback so that it approximates the zvol
-                "options": {
-                    "low_watermark": 0,
-                    "high_watermark": 0,
-                }
-            }))
+        stack = contextlib.ExitStack()
+
+        with stack:
+
+            pmem_stack = stack.enter_context(self.pmem)
+            origin_stack = stack.enter_context(self.origin)
+
+            dm_pmem = stack.enter_context(lib.devicemapper.Target(name="pmem", table=lib.devicemapper.simple_linear_table({
+                "size": 10*(1<<30), # FIXME hard-coded
+                "device": pmem_stack.blockdev_path, #Path(self.store.get_one("fsdax"))
+            })))
+            self.dm_wc = stack.enter_context(lib.devicemapper.WritecachePmem({
+                    "name": "wc",
+                    "size": 40*(1<<30), # FIXME hard-coded
+                    "blocksize": 4096,
+                    "origin_device": origin_stack.blockdev_path, #Path(self.store.get_first("blockdevice")),
+                    "cache_device": dm_pmem.path,
+                    # pretty frequent periodic writeback to approximate what a zvol would be doing
+                    # we verified with fio that this works well
+                    "options": {
+                        "low_watermark": 0,
+                        "high_watermark": 1,
+                    }
+                }))
+
+            self.stack = stack.pop_all()
 
         return self
 
     def __exit__(self, type, val, bt):
-        self.stack.__exit__(type, val, bt)
+        self.stack.close()
         self.stack = None
         self.dm_wc = None
 
