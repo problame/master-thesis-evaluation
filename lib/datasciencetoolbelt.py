@@ -2,6 +2,7 @@ from schema import Schema, Or
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib
 import seaborn as sns
 
 ConfigSchema = Schema({
@@ -20,11 +21,14 @@ def setup(config):
         raise Exception("can only setup once")
     _config = ConfigSchema.validate(config)
 
-    # configure seaborn
+    # use seaborn for styling
     sns.set()
     sns.set_style("whitegrid")
     sns.set_palette(sns.color_palette('muted'))
     sns.set_context(_config["seaborn_context"])
+
+    # for display in this notebook
+    matplotlib.rcParams['figure.dpi'] = 120
 
     if not _config["savefig"]["dir"].is_dir():
         raise Exception(f"savefig.dir={config['savefig']['dir']} must be a directory")
